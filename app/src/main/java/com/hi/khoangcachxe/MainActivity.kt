@@ -9,20 +9,12 @@ import android.graphics.Matrix
 import android.graphics.Rect
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Bundle
 import android.os.SystemClock
-import android.text.Editable
-import android.text.TextWatcher
 import android.util.Size
 import android.view.WindowManager
-import android.view.View
-import android.widget.AdapterView
-import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -53,18 +45,12 @@ import kotlin.math.tan
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        /** Tầm đo tối đa hiển thị. */
         const val MAX_RANGE_M = 110f
-        /** Bề rộng vùng cắt để soi xe ở xa, theo tỉ lệ khung hình. */
-        const val ROI_W = 0.34f
-        const val ROI_H = 0.42f
     }
 
     private lateinit var b: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
-
-    private var detNear: ObjectDetector? = null   // quét toàn khung: xe gần
-    private var detFar: ObjectDetector? = null    // quét vùng cắt: xe xa
+    private var detector: ObjectDetector? = null
     private val busy = AtomicBoolean(false)
 
     private val estimator = DistanceEstimator()
@@ -75,42 +61,13 @@ class MainActivity : AppCompatActivity() {
     private var lastBeep = 0L
     private var tone: ToneGenerator? = null
 
-    private var ownSpeedMs = -1f
-    private var lastLocation: Location? = null
-
-    /** false = đo xe phía trước, true = đo vật bất kỳ. */
-    private var objectMode = false
-    /** Bề ngang thật của vật cần đo, ở chế độ vật thể (mét). */
-    private var objWidthM = 1.22f
-    /**
-     * Công thức camera cho ra khoảng cách từ *ống kính* tới vật. Người cầm máy
-     * đứng lùi phía sau ống kính một đoạn, nên cộng thêm đoạn này để ra khoảng
-     * cách thật từ chỗ đứng tới vật.
-     */
-    private var originOffsetM = 0.40f
-    /** Vật đang được bám ở chế độ vật thể. */
-    private var locked: Rect? = null
-    private var pendingTapX = -1f
-    private var pendingTapY = -1f
-
-    /** Kích thước (cm) tương ứng với danh sách chọn nhanh trong arrays.xml. */
-    private val presetCm = floatArrayOf(
-        0f, 73f, 96f, 111f, 122f, 144f, 54f, 82f, 45f, 70f, 75f, 30f, 40f, 35f, 45f
-    )
-
-    /** Lịch sử bề ngang khung bao gần đây, dùng cho hiệu chỉnh tự động. */
     private val widthHist = ArrayDeque<Pair<Long, Float>>()
-
-    private var calibStage = 0
-    private var calibStartW = 0f
-    private var calibStartLoc: Location? = null
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { res ->
-        if (res[Manifest.permission.CAMERA] == true) startCamera()
+    ) { result ->
+        if (result[Manifest.permission.CAMERA] == true) startCamera()
         else Toast.makeText(this, "Ứng dụng cần quyền Camera", Toast.LENGTH_LONG).show()
-        if (res[Manifest.permission.ACCESS_FINE_LOCATION] == true) startGps()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -122,141 +79,21 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
         tone = try { ToneGenerator(AudioManager.STREAM_MUSIC, 90) } catch (e: Exception) { null }
 
-        val opts = ObjectDetectorOptions.Builder()
-            .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
-            .enableMultipleObjects()
-            .enableClassification()
-            .build()
-        detNear = ObjectDetection.getClient(opts)
-        detFar = ObjectDetection.getClient(opts)
-
-        setupControls()
+        detector = ObjectDetection.getClient(
+            ObjectDetectorOptions.Builder()
+                .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
+                .enableMultipleObjects()
+                .enableClassification()
+                .build()
+        )
 
         val need = mutableListOf<String>()
         if (!granted(Manifest.permission.CAMERA)) need += Manifest.permission.CAMERA
-        if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) need += Manifest.permission.ACCESS_FINE_LOCATION
-        if (need.isEmpty()) { startCamera(); startGps() } else permLauncher.launch(need.toTypedArray())
+        if (need.isEmpty()) startCamera() else permLauncher.launch(need.toTypedArray())
     }
 
     private fun granted(p: String) =
         ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
-
-    // ------------------------------------------------------------- điều khiển
-
-    private fun setupControls() {
-        b.sbWidth.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) {
-                val wm = (140 + p) / 100f
-                if (!objectMode) estimator.vehicleWidthM = wm
-                b.tvWidth.text = String.format("Bề ngang xe trước: %.2f m", wm)
-            }
-            override fun onStartTrackingTouch(s: SeekBar?) {}
-            override fun onStopTrackingTouch(s: SeekBar?) {}
-        })
-        b.sbCalib.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) {
-                estimator.calibration = (70 + p) / 100f          // 0.70 .. 1.30
-                b.tvCalib.text = String.format("Hiệu chỉnh: %.2f", estimator.calibration)
-            }
-            override fun onStartTrackingTouch(s: SeekBar?) {}
-            override fun onStopTrackingTouch(s: SeekBar?) {}
-        })
-        b.sbWidth.progress = 40
-        b.sbCalib.progress = 30
-
-        b.btnCar.setOnClickListener { b.sbWidth.progress = 40 }     // 1.80 m
-        b.btnSuv.setOnClickListener { b.sbWidth.progress = 55 }     // 1.95 m
-        b.btnTruck.setOnClickListener { b.sbWidth.progress = 105 }  // 2.45 m
-        b.btnCalib.setOnClickListener { onCalibClick() }
-
-        b.btnMode.setOnClickListener { setMode(!objectMode) }
-
-        b.etObjW.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b2: Int, c: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b2: Int, c: Int) {}
-            override fun afterTextChanged(e: Editable?) {
-                val cm = e?.toString()?.toFloatOrNull() ?: return
-                if (cm < 2f || cm > 1500f) return
-                objWidthM = cm / 100f
-                if (objectMode) {
-                    estimator.vehicleWidthM = objWidthM
-                    estimator.reset()
-                }
-            }
-        })
-
-        b.etOffset.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b2: Int, c: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b2: Int, c: Int) {}
-            override fun afterTextChanged(e: Editable?) {
-                val cm = e?.toString()?.toFloatOrNull() ?: return
-                if (cm < 0f || cm > 500f) return
-                originOffsetM = cm / 100f
-            }
-        })
-
-        b.spPreset.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                if (pos <= 0 || pos >= presetCm.size) return
-                b.etObjW.setText(presetCm[pos].toInt().toString())
-            }
-            override fun onNothingSelected(p: AdapterView<*>?) {}
-        }
-
-        b.btnCaliper.setOnClickListener {
-            b.overlay.caliperEnabled = !b.overlay.caliperEnabled
-            b.overlay.resetCaliper()
-            estimator.reset()
-            locked = null
-            b.btnCaliper.text =
-                if (b.overlay.caliperEnabled) "Đang dùng: THƯỚC KẸP" else "Đang dùng: TỰ NHẬN DIỆN"
-            b.tvObjHint.text =
-                if (b.overlay.caliperEnabled) "Kéo hai vạch vàng trùng hai mép của vật"
-                else "Chạm vào vật để chọn (có thể không bắt được)"
-        }
-
-        b.overlay.onTap = { x, y ->
-            if (objectMode) { pendingTapX = x; pendingTapY = y }
-        }
-
-        b.tvInfo.text = "Tầm đo: 1 - 110 m"
-    }
-
-    /** Chuyển giữa chế độ đo xe phía trước và chế độ đo vật bất kỳ. */
-    private fun setMode(toObject: Boolean) {
-        objectMode = toObject
-        locked = null
-        lastBox = null
-        pendingTapX = -1f
-        b.overlay.resetCaliper()
-        estimator.reset()
-
-        if (objectMode) {
-            // Bộ nhận diện tổng quát thường bỏ sót đồ vật trong nhà (quạt, tủ,
-            // bình nước...), nên mặc định dùng thước kẹp: luôn cho ra số đo.
-            b.overlay.caliperEnabled = true
-            b.btnCaliper.text = "Đang dùng: THƯỚC KẸP"
-            b.tvObjHint.text = "Kéo hai vạch vàng trùng hai mép của vật"
-            b.btnMode.text = "Chế độ: Vật bất kỳ"
-            b.panelObject.visibility = View.VISIBLE
-            b.tvInfo.text = "Đo vật: nhập bề ngang thật, kéo hai vạch vàng"
-            estimator.vehicleWidthM = objWidthM
-            // vật đứng yên, người cầm máy -> làm mượt mạnh hơn
-            estimator.processAccel = 0.6f
-        } else {
-            b.overlay.caliperEnabled = false
-            b.btnCaliper.text = "Đang dùng: THƯỚC KẸP"
-            b.btnMode.text = "Chế độ: Xe đang chạy"
-            b.panelObject.visibility = View.GONE
-            b.tvInfo.text = "Tầm đo: 1 - 110 m"
-            estimator.vehicleWidthM = (140 + b.sbWidth.progress) / 100f
-            estimator.processAccel = 3.0f
-        }
-        b.tvMain.text = "-- m"
-        b.overlay.setResult(null, 0, 0, "", false)
-    }
-
-    // ---------------------------------------------------------------- camera
 
     private fun startCamera() {
         val future = ProcessCameraProvider.getInstance(this)
@@ -264,9 +101,6 @@ class MainActivity : AppCompatActivity() {
             try {
                 val provider = future.get()
 
-                // Độ phân giải cao là điều kiện bắt buộc để đo xa: ở 110 m một
-                // chiếc xe con chỉ rộng ~26 px trên khung 1920, còn trên khung
-                // 640 thì chỉ ~9 px - không đủ để đo.
                 val selector = ResolutionSelector.Builder()
                     .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
                     .setResolutionStrategy(
@@ -293,7 +127,7 @@ class MainActivity : AppCompatActivity() {
 
                 provider.unbindAll()
                 provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
-                b.tvDetail.text = "Đang tìm xe phía trước..."
+                b.tvDetail.text = "Quay camera vào vật để đo khoảng cách..."
             } catch (e: Exception) {
                 b.tvDetail.text = "Lỗi camera: ${e.message}"
             }
@@ -326,104 +160,42 @@ class MainActivity : AppCompatActivity() {
             focalPx = computeFocalPx(w, h)
             val fp = focalPx
             runOnUiThread {
-                if (!objectMode) b.tvInfo.text = String.format(
-                    "Tầm đo: 1 - 110 m · khung %dx%d · f=%.0f px", w, h, fp
-                )
+                b.tvInfo.text = String.format("Tầm đo: 1 - 110 m · khung %dx%d · f=%.0f px", w, h, fp)
             }
         }
 
-        // Thước kẹp thủ công: không cần nhận diện, chỉ lấy khoảng cách hai vạch.
-        if (objectMode && b.overlay.caliperEnabled) {
-            runOnUiThread { renderCaliper(w, h) }
-            bmp.recycle()
-            busy.set(false)
-            return
-        }
+        val det = detector
+        if (det == null) { busy.set(false); return }
 
-        val near = detNear
-        val far = detFar
-        if (near == null || far == null) { busy.set(false); return }
-
-        // Vùng cắt bám theo vị trí xe lần trước; mặc định là giữa khung hình,
-        // hơi cao hơn tâm một chút vì xe ở xa nằm gần đường chân trời.
-        val cx = lastBox?.exactCenterX() ?: (w * 0.5f)
-        val cy = lastBox?.exactCenterY() ?: (h * 0.47f)
-        val rw = (w * ROI_W).roundToInt()
-        val rh = (h * ROI_H).roundToInt()
-        val rx = (cx - rw / 2f).roundToInt().coerceIn(0, w - rw)
-        val ry = (cy - rh / 2f).roundToInt().coerceIn(0, h - rh)
-        val roi = Rect(rx, ry, rx + rw, ry + rh)
-
-        near.process(InputImage.fromBitmap(bmp, 0))
-            .addOnSuccessListener { nearObjs ->
-                val crop = try {
-                    Bitmap.createBitmap(bmp, roi.left, roi.top, rw, rh)
-                } catch (e: Exception) { null }
-
-                if (crop == null || objectMode) {
-                    crop?.recycle()
-                    finishFrame(nearObjs, emptyList(), roi, w, h)
-                    bmp.recycle()
-                } else {
-                    far.process(InputImage.fromBitmap(crop, 0))
-                        .addOnSuccessListener { farObjs -> finishFrame(nearObjs, farObjs, roi, w, h) }
-                        .addOnFailureListener { finishFrame(nearObjs, emptyList(), roi, w, h) }
-                        .addOnCompleteListener { crop.recycle(); bmp.recycle() }
-                }
+        det.process(InputImage.fromBitmap(bmp, 0))
+            .addOnSuccessListener { objs ->
+                val best = pickBest(objs, w, h)
+                runOnUiThread { render(best, w, h) }
+                bmp.recycle()
+                busy.set(false)
             }
             .addOnFailureListener { bmp.recycle(); busy.set(false) }
     }
 
-    private fun finishFrame(
-        nearObjs: List<DetectedObject>,
-        farObjs: List<DetectedObject>,
-        roi: Rect,
-        w: Int,
-        h: Int
-    ) {
-        // Đưa toạ độ của vùng cắt về toạ độ khung hình đầy đủ
-        val mapped = farObjs.map {
-            Rect(
-                it.boundingBox.left + roi.left, it.boundingBox.top + roi.top,
-                it.boundingBox.right + roi.left, it.boundingBox.bottom + roi.top
-            )
-        }
-        val nearRects = nearObjs.map { it.boundingBox }
-
-        val best = if (objectMode) {
-            pickObject(nearRects, w, h)
-        } else {
-            val bestNear = pickBest(nearRects, w, h)
-            // Xe gần thì quét toàn khung đã đủ; chỉ khi khung bao nhỏ (xe ở xa) mới
-            // ưu tiên kết quả từ vùng cắt vì ở đó xe được phóng to ~3 lần.
-            if (bestNear != null && bestNear.width() > w * 0.09f) bestNear
-            else pickBest(mapped, w, h) ?: bestNear
-        }
-
-        runOnUiThread { render(best, w, h) }
-        busy.set(false)
-    }
-
-    private fun render(box: Rect?, w: Int, h: Int) {
+    private fun render(obj: DetectedObject?, w: Int, h: Int) {
         val now = SystemClock.elapsedRealtime()
         b.overlay.setImageSize(w, h)
 
-        if (box == null) {
+        if (obj == null) {
             if (now - lastSeen > 900) {
                 lastBox = null
-                if (objectMode) locked = null
                 estimator.reset()
                 widthHist.clear()
                 b.tvMain.text = "-- m"
                 b.tvMain.setTextColor(Color.WHITE)
-                b.tvDetail.text =
-                    if (objectMode) "Chưa chọn được vật - chạm vào vật, hoặc bật thước kẹp"
-                    else "Không thấy xe phía trước" + gpsSuffix()
+                b.tvDetail.text = "Quay camera vào vật để đo khoảng cách"
                 b.overlay.setResult(null, w, h, "", false)
             }
             return
         }
+
         lastSeen = now
+        val box = obj.boundingBox
         lastBox = box
 
         val bw = box.width().toFloat()
@@ -437,61 +209,49 @@ class MainActivity : AppCompatActivity() {
         val overRange = d > MAX_RANGE_M
         val label = if (overRange) "> 110 m" else formatDistance(d)
 
-        if (objectMode) {
-            val fromMe = distanceFromMe(
-                d, box.exactCenterX() - w / 2f, box.exactCenterY() - h / 2f
-            )
-            val objLabel = if (fromMe > MAX_RANGE_M) "> 110 m" else formatDistance(fromMe)
-            b.tvMain.text = objLabel
-            b.tvMain.setTextColor(if (overRange) Color.rgb(160, 160, 160) else Color.WHITE)
-            b.tvDetail.text = String.format(
-                "từ bạn tới vật · ± %.2f m · vật rộng %.0f cm · %d px",
-                res.uncertaintyM, estimator.vehicleWidthM * 100f, box.width()
-            )
-            b.overlay.setResult(box, w, h, objLabel, false)
-            return
-        }
-
-        val safeD = if (ownSpeedMs > 1.5f) ownSpeedMs * 2f else -1f
-        val alert = !overRange &&
-                ((res.ttcS in 0.1f..3.0f) || (safeD > 0 && d < safeD * 0.8f))
-
         b.tvMain.text = label
-        b.tvMain.setTextColor(
-            when {
-                alert -> Color.rgb(255, 80, 80)
-                overRange -> Color.rgb(160, 160, 160)
-                else -> Color.WHITE
-            }
-        )
+        b.tvMain.setTextColor(if (overRange) Color.rgb(160, 160, 160) else Color.WHITE)
 
+        val objLabel = obj.labels.firstOrNull()?.text ?: "vật"
         val sb = StringBuilder()
-        if (!overRange) sb.append(String.format("± %.1f m · ", res.uncertaintyM))
-        sb.append(
-            when {
-                res.closingMs > 0.3f -> String.format("tiến gần %.0f km/h", res.closingMs * 3.6f)
-                res.closingMs < -0.3f -> String.format("giãn ra %.0f km/h", -res.closingMs * 3.6f)
-                else -> "khoảng cách ổn định"
-            }
-        )
-        if (res.ttcS in 0.1f..30f) sb.append(String.format(" · va chạm sau %.1f s", res.ttcS))
-        if (safeD > 0) sb.append(String.format(" · an toàn ≥ %.0f m", safeD))
-        sb.append(gpsSuffix())
+        sb.append("$objLabel · ± %.2f m".format(res.uncertaintyM))
+        sb.append(" · rộng %.0f cm".format(estimator.vehicleWidthM * 100f))
         b.tvDetail.text = sb.toString()
 
-        b.overlay.setResult(box, w, h, label, alert)
-
-        if (alert && now - lastBeep > 1500) {
-            lastBeep = now
-            try { tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 200) } catch (e: Exception) {}
-        }
+        b.overlay.setResult(box, w, h, label, false)
     }
 
-    /**
-     * Tiêu cự quy đổi ra pixel, lấy từ thông số phần cứng của camera sau.
-     * Khung 16:9 trên hầu hết máy là cắt bớt chiều dọc của cảm biến, chiều ngang
-     * vẫn dùng trọn bề ngang cảm biến, nên công thức theo bề ngang là đúng.
-     */
+    private fun pickBest(objs: List<DetectedObject>, w: Int, h: Int): DetectedObject? {
+        var best: DetectedObject? = null
+        var bestScore = 0f
+
+        for (o in objs) {
+            val r = o.boundingBox
+            val bw = r.width().toFloat()
+            val bh = r.height().toFloat()
+            if (bw < 8f || bh < 6f || bw > w * 0.92f) continue
+
+            val cx = r.exactCenterX() / w
+            if (cx < 0.15f || cx > 0.85f) continue
+            if (r.bottom < h * 0.25f) continue
+
+            val score = bw / w * (1f - abs(cx - 0.5f))
+            if (score > bestScore) {
+                bestScore = score
+                best = o
+
+                // LẤY NHÃN VÀ BỀ NGANG TỰ ĐỘNG
+                val label = o.labels.firstOrNull()?.text ?: "object"
+                val autoW = ObjectSize.getWidth(label)
+                estimator.vehicleWidthM = autoW
+            }
+        }
+        return best
+    }
+
+    private fun formatDistance(d: Float): String =
+        if (d < 10f) String.format("%.2f m", d) else String.format("%.1f m", d)
+
     private fun computeFocalPx(w: Int, h: Int): Float {
         try {
             val cm = getSystemService(CameraManager::class.java)
@@ -508,207 +268,10 @@ class MainActivity : AppCompatActivity() {
         return (w / 2f) / tan(Math.toRadians(30.0)).toFloat()
     }
 
-    /**
-     * Công thức bề-ngang cho ra ĐỘ SÂU (khoảng cách vuông góc theo trục ống kính).
-     * Nếu vật lệch sang bên hoặc lên xuống so với tâm khung hình thì khoảng cách
-     * thẳng từ camera tới vật dài hơn độ sâu:
-     *
-     *      d_thẳng = d_sâu × căn(1 + (u/f)² + (v/f)²)
-     *
-     * u, v là độ lệch của vật so với tâm khung hình, tính bằng pixel.
-     * Sau đó cộng đoạn từ chỗ người đứng tới camera để ra con số cần hiển thị.
-     */
-    private fun distanceFromMe(depthM: Float, u: Float, v: Float): Float {
-        if (focalPx <= 0f) return depthM + originOffsetM
-        val a = u / focalPx
-        val c = v / focalPx
-        return depthM * sqrt(1f + a * a + c * c) + originOffsetM
-    }
-
-    /** Luôn hiển thị theo mét. */
-    private fun formatDistance(d: Float): String =
-        if (d < 10f) String.format("%.2f m", d) else String.format("%.1f m", d)
-
-    /** Đo bằng thước kẹp thủ công: bề ngang chính là khoảng cách hai vạch. */
-    private fun renderCaliper(w: Int, h: Int) {
-        b.overlay.setImageSize(w, h)
-        // Đặt sẵn hai vạch ở giữa khung ngay từ khung hình đầu tiên, để luôn có
-        // số đo mà không phải chờ người dùng kéo.
-        if (b.overlay.caliperX1 < 0f || b.overlay.caliperX2 < 0f) {
-            b.overlay.caliperX1 = w * 0.40f
-            b.overlay.caliperX2 = w * 0.60f
-        }
-        val px = b.overlay.caliperWidthPx()
-        if (px < 4f) {
-            b.tvMain.text = "-- m"
-            b.tvDetail.text = "Kéo hai vạch vàng trùng hai mép của vật"
-            b.overlay.postInvalidate()
-            return
-        }
-        val res = estimator.update(px, focalPx, SystemClock.elapsedRealtime())
-        if (res == null) { b.overlay.postInvalidate(); return }
-
-        val midX = (b.overlay.caliperX1 + b.overlay.caliperX2) / 2f
-        val fromMe = distanceFromMe(res.distanceM, midX - w / 2f, 0f)
-        val label = if (fromMe > MAX_RANGE_M) "> 110 m" else formatDistance(fromMe)
-        b.tvMain.text = label
-        b.tvMain.setTextColor(Color.WHITE)
-        b.tvDetail.text = String.format(
-            "từ bạn tới vật · ± %.2f m · vật rộng %.0f cm · %.0f px",
-            res.uncertaintyM, estimator.vehicleWidthM * 100f, px
-        )
-        b.overlay.setResult(null, w, h, label, false)
-    }
-
-    /**
-     * Chọn vật ở chế độ đo vật bất kỳ.
-     * Ưu tiên: vật vừa được chạm > vật đang bám > vật lớn nhất gần tâm.
-     * Không áp dụng các ràng buộc dành cho xe trên đường (nằm dưới, tỉ lệ ngang).
-     */
-    private fun pickObject(rects: List<Rect>, w: Int, h: Int): Rect? {
-        if (rects.isEmpty()) return null
-
-        if (pendingTapX >= 0f) {
-            val tx = pendingTapX
-            val ty = pendingTapY
-            pendingTapX = -1f
-            val hit = rects.filter { it.contains(tx.toInt(), ty.toInt()) }
-                .minByOrNull { it.width() * it.height() }
-                ?: rects.minByOrNull {
-                    val dx = it.exactCenterX() - tx
-                    val dy = it.exactCenterY() - ty
-                    dx * dx + dy * dy
-                }
-            if (hit != null) {
-                locked = hit
-                estimator.reset()
-                return hit
-            }
-        }
-
-        locked?.let { lk ->
-            val near = rects.minByOrNull {
-                val dx = it.exactCenterX() - lk.exactCenterX()
-                val dy = it.exactCenterY() - lk.exactCenterY()
-                dx * dx + dy * dy
-            }
-            if (near != null) {
-                val dx = abs(near.exactCenterX() - lk.exactCenterX()) / w
-                val dy = abs(near.exactCenterY() - lk.exactCenterY()) / h
-                if (dx < 0.25f && dy < 0.25f) { locked = near; return near }
-            }
-        }
-
-        return rects.filter { it.width() >= 10 && it.height() >= 10 }
-            .maxByOrNull {
-                val cx = it.exactCenterX() / w
-                it.width().toFloat() * (1f - abs(cx - 0.5f))
-            }
-    }
-
-    private fun pickBest(rects: List<Rect>, w: Int, h: Int): Rect? {
-        var best: Rect? = null
-        var bestScore = 0f
-        for (r in rects) {
-            val bw = r.width().toFloat()
-            val bh = r.height().toFloat()
-            if (bw < 8f || bh < 6f || bw > w * 0.92f) continue
-            val ar = bw / bh
-            if (ar < 0.55f || ar > 3.6f) continue
-            val cx = r.exactCenterX() / w
-            if (cx < 0.18f || cx > 0.82f) continue
-            if (r.bottom < h * 0.30f) continue
-            // gần tâm + đủ lớn; nếu đang bám một xe thì ưu tiên xe ở gần vị trí cũ
-            var score = (bw / w) * (1f - abs(cx - 0.5f))
-            lastBox?.let { lb ->
-                val dx = abs(r.exactCenterX() - lb.exactCenterX()) / w
-                val dy = abs(r.exactCenterY() - lb.exactCenterY()) / h
-                if (dx < 0.15f && dy < 0.15f) score *= 2.5f
-            }
-            if (score > bestScore) { bestScore = score; best = r }
-        }
-        return best
-    }
-
-    // ------------------------------------------------- hiệu chỉnh tự động GPS
-
-    private fun avgWidth(): Float {
-        if (widthHist.isEmpty()) return 0f
-        var s = 0f
-        for (p in widthHist) s += p.second
-        return s / widthHist.size
-    }
-
-    private fun onCalibClick() {
-        val w = avgWidth()
-        val loc = lastLocation
-        if (w <= 0f) { toast("Chưa bám được xe phía trước"); return }
-        if (loc == null) { toast("Chưa có tín hiệu GPS"); return }
-
-        if (calibStage == 0) {
-            calibStartW = w
-            calibStartLoc = Location(loc)
-            calibStage = 1
-            b.btnCalib.text = "Bấm lần 2 (sau khi tới gần)"
-            b.tvCalibInfo.text = "Đã ghi mốc 1. Chạy tới gần xe đó thêm ≥ 10 m rồi bấm lại."
-            return
-        }
-
-        val start = calibStartLoc
-        calibStage = 0
-        b.btnCalib.text = "Hiệu chỉnh tự động bằng GPS"
-        if (start == null) return
-
-        val ds = start.distanceTo(loc)
-        if (ds < 8f) { b.tvCalibInfo.text = "Quãng đường quá ngắn (${ds.roundToInt()} m), cần ≥ 10 m."; return }
-        if (w <= calibStartW * 1.05f) { b.tvCalibInfo.text = "Xe trước chưa to lên rõ, thử lại."; return }
-
-        // d = k / w  =>  d1 - d2 = k(1/w1 - 1/w2) = quãng đường đã đi
-        val k = ds / (1f / calibStartW - 1f / w)
-        val base = estimator.vehicleWidthM * focalPx
-        if (base <= 0f) return
-        val newCalib = (k / base).coerceIn(0.7f, 1.3f)
-        b.sbCalib.progress = ((newCalib * 100f) - 70f).roundToInt().coerceIn(0, 60)
-        b.tvCalibInfo.text = String.format(
-            "Đã hiệu chỉnh: %.2f (đi được %.0f m)", newCalib, ds
-        )
-        estimator.reset()
-    }
-
-    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
-
-    private fun gpsSuffix(): String =
-        if (ownSpeedMs >= 0f) String.format(" · xe mình %.0f km/h", ownSpeedMs * 3.6f) else ""
-
-    // -------------------------------------------------------------------- GPS
-
-    private val gpsListener = object : LocationListener {
-        override fun onLocationChanged(location: Location) {
-            lastLocation = location
-            ownSpeedMs = if (location.hasSpeed()) location.speed else -1f
-        }
-        override fun onProviderDisabled(provider: String) {}
-        override fun onProviderEnabled(provider: String) {}
-        @Deprecated("Deprecated in Java")
-        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun startGps() {
-        if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) return
-        try {
-            val lm = getSystemService(LocationManager::class.java)
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500L, 0f, gpsListener)
-        } catch (e: Exception) {
-        }
-    }
-
     override fun onDestroy() {
         super.onDestroy()
-        try { getSystemService(LocationManager::class.java).removeUpdates(gpsListener) } catch (e: Exception) {}
         cameraExecutor.shutdown()
-        detNear?.close()
-        detFar?.close()
+        detector?.close()
         tone?.release()
     }
 }

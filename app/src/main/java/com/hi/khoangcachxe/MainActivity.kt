@@ -175,8 +175,8 @@ class MainActivity : AppCompatActivity() {
         if (near == null || far == null) { busy.set(false); return }
 
         // Vùng cắt ở giữa khung, phóng to để bắt vật ở xa
-        val rw = (w * ROI_W).roundToInt()
-        val rh = (h * ROI_H).roundToInt()
+        val rw = (w * ROI_W).toInt()
+        val rh = (h * ROI_H).toInt()
         val rx = ((w - rw) / 2).roundToInt()
         val ry = ((h - rh) / 2).roundToInt()
         val roi = Rect(rx, ry, rx + rw, ry + rh)
@@ -206,26 +206,38 @@ class MainActivity : AppCompatActivity() {
         w: Int,
         h: Int
     ) {
-        // Đưa toạ độ vùng cắt về toạ độ khung hình đầy đủ
-        val mappedFar = farObjs.map {
-            DetectedObject(
-                Rect(
-                    it.boundingBox.left + roi.left,
-                    it.boundingBox.top + roi.top,
-                    it.boundingBox.right + roi.left,
-                    it.boundingBox.bottom + roi.top
-                ),
-                it.trackingId,
-                it.labels
-            )
-        }
-
-        // Ưu tiên vật từ vùng cắt nếu khung bao ở quét toàn khung quá nhỏ
-        val nearRects = nearObjs.map { it.boundingBox }
         val bestNear = pickBest(nearObjs, w, h)
         
-        val best = if (bestNear != null && bestNear.width() > w * 0.09f) bestNear
-        else pickBest(mappedFar, w, h)
+        // Ưu tiên vật từ vùng cắt nếu khung bao ở quét toàn khung quá nhỏ
+        val best = if (bestNear != null && bestNear.boundingBox.width() > w * 0.09f) {
+            bestNear
+        } else {
+            // Thử tìm vật ở vùng cắt, di dời toạ độ
+            var bestFar: DetectedObject? = null
+            var bestScore = 0f
+            for (o in farObjs) {
+                val r = o.boundingBox
+                val bw = r.width().toFloat()
+                val bh = r.height().toFloat()
+                if (bw < 8f || bh < 6f) continue
+                
+                val mapped = Rect(r.left + roi.left, r.top + roi.top, 
+                                  r.right + roi.left, r.bottom + roi.top)
+                if (mapped.width() > w * 0.92f) continue
+                
+                val cx = mapped.exactCenterX() / w
+                if (cx < 0.15f || cx > 0.85f) continue
+                
+                val score = bw / w
+                if (score > bestScore) {
+                    bestScore = score
+                    bestFar = o
+                    val label = o.labels.firstOrNull()?.text ?: "object"
+                    estimator.vehicleWidthM = ObjectSize.getWidth(label)
+                }
+            }
+            bestFar
+        }
 
         runOnUiThread { render(best, w, h) }
         busy.set(false)

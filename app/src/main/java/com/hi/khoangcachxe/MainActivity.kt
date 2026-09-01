@@ -1,7 +1,6 @@
 package com.hi.khoangcachxe
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -38,25 +37,21 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
-import kotlin.math.roundToInt
-import kotlin.math.sqrt
 import kotlin.math.tan
 
 class MainActivity : AppCompatActivity() {
 
     companion object {
         const val MAX_RANGE_M = 110f
-        // Vùng cắt phóng to ở giữa khung hình để bắt vật ở xa
-        const val ROI_W = 0.34f   // 34% chiều rộng
-        const val ROI_H = 0.42f   // 42% chiều cao
+        const val ROI_W = 0.34f
+        const val ROI_H = 0.42f
     }
 
     private lateinit var b: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
-    
-    private var detNear: ObjectDetector? = null   // quét toàn khung
-    private var detFar: ObjectDetector? = null    // quét vùng cắt phóng to
 
+    private var detNear: ObjectDetector? = null
+    private var detFar: ObjectDetector? = null
     private val busy = AtomicBoolean(false)
 
     private val estimator = DistanceEstimator()
@@ -64,7 +59,6 @@ class MainActivity : AppCompatActivity() {
     private var focalPx = 0f
     private var lastBox: Rect? = null
     private var lastSeen = 0L
-    private var lastBeep = 0L
     private var tone: ToneGenerator? = null
 
     private val widthHist = ArrayDeque<Pair<Long, Float>>()
@@ -174,17 +168,14 @@ class MainActivity : AppCompatActivity() {
         val far = detFar
         if (near == null || far == null) { busy.set(false); return }
 
-        // Vùng cắt ở giữa khung, phóng to để bắt vật ở xa
         val rw = (w * ROI_W).toInt()
         val rh = (h * ROI_H).toInt()
-        val rx = ((w - rw) / 2).roundToInt()
-        val ry = ((h - rh) / 2).roundToInt()
+        val rx = (w - rw) / 2
+        val ry = (h - rh) / 2
         val roi = Rect(rx, ry, rx + rw, ry + rh)
 
-        // Quét toàn khung
         near.process(InputImage.fromBitmap(bmp, 0))
             .addOnSuccessListener { nearObjs ->
-                // Quét vùng cắt để bắt vật ở xa
                 val crop = try { Bitmap.createBitmap(bmp, roi.left, roi.top, rw, rh) } catch (e: Exception) { null }
                 if (crop == null) {
                     finishFrame(nearObjs, emptyList(), roi, w, h)
@@ -207,40 +198,75 @@ class MainActivity : AppCompatActivity() {
         h: Int
     ) {
         val bestNear = pickBest(nearObjs, w, h)
-        
-        // Ưu tiên vật từ vùng cắt nếu khung bao ở quét toàn khung quá nhỏ
-        val best = if (bestNear != null && bestNear.boundingBox.width() > w * 0.09f) {
+        val best: DetectedObject?
+
+        best = if (bestNear != null && bestNear.boundingBox.width() > w * 0.09f) {
             bestNear
         } else {
-            // Thử tìm vật ở vùng cắt, di dời toạ độ
-            var bestFar: DetectedObject? = null
-            var bestScore = 0f
-            for (o in farObjs) {
-                val r = o.boundingBox
-                val bw = r.width().toFloat()
-                val bh = r.height().toFloat()
-                if (bw < 8f || bh < 6f) continue
-                
-                val mapped = Rect(r.left + roi.left, r.top + roi.top, 
-                                  r.right + roi.left, r.bottom + roi.top)
-                if (mapped.width() > w * 0.92f) continue
-                
-                val cx = mapped.exactCenterX() / w
-                if (cx < 0.15f || cx > 0.85f) continue
-                
-                val score = bw / w
-                if (score > bestScore) {
-                    bestScore = score
-                    bestFar = o
-                    val label = o.labels.firstOrNull()?.text ?: "object"
-                    estimator.vehicleWidthM = ObjectSize.getWidth(label)
-                }
-            }
-            bestFar
+            pickBestFar(farObjs, roi, w, h)
         }
 
         runOnUiThread { render(best, w, h) }
         busy.set(false)
+    }
+
+    private fun pickBest(objs: List<DetectedObject>, w: Int, h: Int): DetectedObject? {
+        var best: DetectedObject? = null
+        var bestScore = 0f
+
+        for (o in objs) {
+            val r = o.boundingBox
+            val bw = r.width().toFloat()
+            val bh = r.height().toFloat()
+            if (bw < 8f || bh < 6f || bw > w * 0.92f) continue
+
+            val cx = r.exactCenterX() / w
+            if (cx < 0.15f || cx > 0.85f) continue
+            if (r.bottom < h * 0.25f) continue
+
+            val score = bw / w * (1f - abs(cx - 0.5f))
+            if (score > bestScore) {
+                bestScore = score
+                best = o
+                val label = o.labels.firstOrNull()?.text ?: "object"
+                estimator.vehicleWidthM = ObjectSize.getWidth(label)
+            }
+        }
+        return best
+    }
+
+    /** Tìm vật tốt nhất ở vùng cắt, với toạ độ di dời. */
+    private fun pickBestFar(objs: List<DetectedObject>, roi: Rect, w: Int, h: Int): DetectedObject? {
+        var best: DetectedObject? = null
+        var bestScore = 0f
+
+        for (o in objs) {
+            val r = o.boundingBox
+            val bw = r.width().toFloat()
+            val bh = r.height().toFloat()
+            if (bw < 8f || bh < 6f) continue
+
+            // Di dời toạ độ từ vùng cắt về khung hình đầy đủ
+            val mappedLeft = r.left + roi.left
+            val mappedTop = r.top + roi.top
+            val mappedRight = r.right + roi.left
+            val mappedBottom = r.bottom + roi.top
+            val mappedW = mappedRight - mappedLeft
+
+            if (mappedW > w * 0.92f) continue
+
+            val cx = (mappedLeft + mappedRight) / 2f / w
+            if (cx < 0.15f || cx > 0.85f) continue
+
+            val score = bw / w
+            if (score > bestScore) {
+                bestScore = score
+                best = o
+                val label = o.labels.firstOrNull()?.text ?: "object"
+                estimator.vehicleWidthM = ObjectSize.getWidth(label)
+            }
+        }
+        return best
     }
 
     private fun render(obj: DetectedObject?, w: Int, h: Int) {
@@ -285,34 +311,6 @@ class MainActivity : AppCompatActivity() {
         b.tvDetail.text = sb.toString()
 
         b.overlay.setResult(box, w, h, label, false)
-    }
-
-    private fun pickBest(objs: List<DetectedObject>, w: Int, h: Int): DetectedObject? {
-        var best: DetectedObject? = null
-        var bestScore = 0f
-
-        for (o in objs) {
-            val r = o.boundingBox
-            val bw = r.width().toFloat()
-            val bh = r.height().toFloat()
-            if (bw < 8f || bh < 6f || bw > w * 0.92f) continue
-
-            val cx = r.exactCenterX() / w
-            if (cx < 0.15f || cx > 0.85f) continue
-            if (r.bottom < h * 0.25f) continue
-
-            val score = bw / w * (1f - abs(cx - 0.5f))
-            if (score > bestScore) {
-                bestScore = score
-                best = o
-
-                // LẤY NHÃN VÀ BỀ NGANG TỰ ĐỘNG
-                val label = o.labels.firstOrNull()?.text ?: "object"
-                val autoW = ObjectSize.getWidth(label)
-                estimator.vehicleWidthM = autoW
-            }
-        }
-        return best
     }
 
     private fun formatDistance(d: Float): String =

@@ -39,6 +39,13 @@ class OverlayView @JvmOverloads constructor(
     var caliperX1 = -1f
     var caliperX2 = -1f
 
+    /** Bật vạch ngắm ngang (dùng cho cách đo bằng góc nghiêng). */
+    var aimEnabled = false
+        set(value) { field = value; invalidate() }
+
+    /** Vị trí vạch ngắm ngang, theo toạ độ ảnh. */
+    var aimY = -1f
+
     var onTap: ((Float, Float) -> Unit)? = null
 
     private var dragging = 0   // 0 = không, 1 = vạch trái, 2 = vạch phải
@@ -87,6 +94,11 @@ class OverlayView @JvmOverloads constructor(
         invalidate()
     }
 
+    fun resetAim() {
+        aimY = -1f
+        invalidate()
+    }
+
     // ------------------------------------------------- quy đổi toạ độ (fitCenter)
 
     private fun scale(): Float =
@@ -106,6 +118,17 @@ class OverlayView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (imgW <= 0 || imgH <= 0) return false
         val ix = toImageX(event.x).coerceIn(0f, imgW - 1f)
+
+        if (aimEnabled) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    aimY = toImageY(event.y).coerceIn(0f, imgH - 1f)
+                    invalidate()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> performClick()
+            }
+            return true
+        }
 
         if (caliperEnabled) {
             when (event.actionMasked) {
@@ -144,6 +167,12 @@ class OverlayView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (imgW <= 0 || imgH <= 0) return
+
+        if (aimEnabled) {
+            if (aimY < 0f) aimY = imgH * 0.75f
+            drawAim(canvas)
+            return
+        }
 
         if (caliperEnabled) {
             if (caliperX1 < 0f || caliperX2 < 0f) {
@@ -195,6 +224,28 @@ class OverlayView @JvmOverloads constructor(
             val tw = textPaint.measureText(label)
             val cx = (x1 + x2) / 2f - tw / 2f
             val ty = midY - 48f
+            canvas.drawRect(cx - 10f, ty - 42f, cx + tw + 10f, ty + 12f, bgPaint)
+            canvas.drawText(label, cx, ty, textPaint)
+        }
+    }
+
+    private fun drawAim(canvas: Canvas) {
+        val y = toViewY(aimY)
+        val left = toViewX(0f)
+        val right = toViewX(imgW.toFloat())
+
+        canvas.drawLine(left, y, right, y, linePaint)
+        canvas.drawCircle((left + right) / 2f, y, 26f, fillPaint)
+
+        // vạch mốc đường chân trời tham khảo
+        val hz = toViewY(imgH / 2f)
+        val dash = Paint(linePaint).apply { color = Color.argb(120, 255, 255, 255); strokeWidth = 3f }
+        canvas.drawLine(left, hz, right, hz, dash)
+
+        if (label.isNotEmpty()) {
+            val tw = textPaint.measureText(label)
+            val cx = (left + right) / 2f - tw / 2f
+            val ty = y - 40f
             canvas.drawRect(cx - 10f, ty - 42f, cx + tw + 10f, ty + 12f, bgPaint)
             canvas.drawText(label, cx, ty, textPaint)
         }

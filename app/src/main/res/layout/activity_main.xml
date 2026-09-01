@@ -42,6 +42,77 @@
             android:textSize="13sp" />
     </LinearLayout>
 
+    <LinearLayout
+        android:id="@+id/panelMode"
+        android:layout_width="240dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:orientation="vertical"
+        android:background="#99000000"
+        android:padding="8dp">
+
+        <Button
+            android:id="@+id/btnMode"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:textSize="11sp"
+            android:padding="0dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:text="Chế độ: Xe đang chạy" />
+
+        <LinearLayout
+            android:id="@+id/panelObject"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp"
+                android:text="Bề ngang thật của vật (cm):" />
+
+            <EditText
+                android:id="@+id/etObjW"
+                android:layout_width="match_parent"
+                android:layout_height="42dp"
+                android:inputType="numberDecimal"
+                android:imeOptions="actionDone|flagNoExtractUi"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:text="122"
+                android:autofillHints=""
+                android:hint="cm" />
+
+            <Spinner
+                android:id="@+id/spPreset"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:entries="@array/object_presets" />
+
+            <Button
+                android:id="@+id/btnCaliper"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:textSize="10sp"
+                android:padding="0dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="Thước kẹp thủ công: TẮT" />
+
+            <TextView
+                android:id="@+id/tvObjHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#FFD400"
+                android:textSize="10sp"
+                android:text="Chạm vào vật trên màn hình để chọn" />
+        </LinearLayout>
+    </LinearLayout>
+
     <TextView
         android:id="@+id/tvInfo"
         android:layout_width="wrap_content"

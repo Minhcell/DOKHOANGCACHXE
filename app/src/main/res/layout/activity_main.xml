@@ -93,6 +93,25 @@
                 android:layout_height="40dp"
                 android:entries="@array/object_presets" />
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp"
+                android:text="Từ chỗ đứng tới camera (cm):" />
+
+            <EditText
+                android:id="@+id/etOffset"
+                android:layout_width="match_parent"
+                android:layout_height="42dp"
+                android:inputType="numberDecimal"
+                android:imeOptions="actionDone|flagNoExtractUi"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:text="40"
+                android:autofillHints=""
+                android:hint="cm" />
+
             <Button
                 android:id="@+id/btnCaliper"
                 android:layout_width="match_parent"

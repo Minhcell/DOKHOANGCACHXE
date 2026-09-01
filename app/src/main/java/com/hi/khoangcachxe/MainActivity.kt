@@ -47,6 +47,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 import kotlin.math.tan
 
 class MainActivity : AppCompatActivity() {
@@ -93,7 +94,9 @@ class MainActivity : AppCompatActivity() {
     private var pendingTapY = -1f
 
     /** Kích thước (cm) tương ứng với danh sách chọn nhanh trong arrays.xml. */
-    private val presetCm = floatArrayOf(0f, 73f, 96f, 111f, 122f, 144f, 54f, 82f, 45f, 70f, 75f, 30f)
+    private val presetCm = floatArrayOf(
+        0f, 73f, 96f, 111f, 122f, 144f, 54f, 82f, 45f, 70f, 75f, 30f, 40f, 35f, 45f
+    )
 
     /** Lịch sử bề ngang khung bao gần đây, dùng cho hiệu chỉnh tự động. */
     private val widthHist = ArrayDeque<Pair<Long, Float>>()
@@ -206,10 +209,10 @@ class MainActivity : AppCompatActivity() {
             estimator.reset()
             locked = null
             b.btnCaliper.text =
-                if (b.overlay.caliperEnabled) "Thước kẹp thủ công: BẬT" else "Thước kẹp thủ công: TẮT"
+                if (b.overlay.caliperEnabled) "Đang dùng: THƯỚC KẸP" else "Đang dùng: TỰ NHẬN DIỆN"
             b.tvObjHint.text =
                 if (b.overlay.caliperEnabled) "Kéo hai vạch vàng trùng hai mép của vật"
-                else "Chạm vào vật trên màn hình để chọn"
+                else "Chạm vào vật để chọn (có thể không bắt được)"
         }
 
         b.overlay.onTap = { x, y ->
@@ -225,19 +228,24 @@ class MainActivity : AppCompatActivity() {
         locked = null
         lastBox = null
         pendingTapX = -1f
-        b.overlay.caliperEnabled = false
         b.overlay.resetCaliper()
-        b.btnCaliper.text = "Thước kẹp thủ công: TẮT"
         estimator.reset()
 
         if (objectMode) {
+            // Bộ nhận diện tổng quát thường bỏ sót đồ vật trong nhà (quạt, tủ,
+            // bình nước...), nên mặc định dùng thước kẹp: luôn cho ra số đo.
+            b.overlay.caliperEnabled = true
+            b.btnCaliper.text = "Đang dùng: THƯỚC KẸP"
+            b.tvObjHint.text = "Kéo hai vạch vàng trùng hai mép của vật"
             b.btnMode.text = "Chế độ: Vật bất kỳ"
             b.panelObject.visibility = View.VISIBLE
-            b.tvInfo.text = "Đo vật: nhập bề ngang thật rồi chạm vào vật"
+            b.tvInfo.text = "Đo vật: nhập bề ngang thật, kéo hai vạch vàng"
             estimator.vehicleWidthM = objWidthM
             // vật đứng yên, người cầm máy -> làm mượt mạnh hơn
             estimator.processAccel = 0.6f
         } else {
+            b.overlay.caliperEnabled = false
+            b.btnCaliper.text = "Đang dùng: THƯỚC KẸP"
             b.btnMode.text = "Chế độ: Xe đang chạy"
             b.panelObject.visibility = View.GONE
             b.tvInfo.text = "Tầm đo: 1 - 110 m"
@@ -318,7 +326,7 @@ class MainActivity : AppCompatActivity() {
             focalPx = computeFocalPx(w, h)
             val fp = focalPx
             runOnUiThread {
-                b.tvInfo.text = String.format(
+                if (!objectMode) b.tvInfo.text = String.format(
                     "Tầm đo: 1 - 110 m · khung %dx%d · f=%.0f px", w, h, fp
                 )
             }
@@ -430,13 +438,15 @@ class MainActivity : AppCompatActivity() {
         val label = if (overRange) "> 110 m" else formatDistance(d)
 
         if (objectMode) {
-            val fromMe = d + originOffsetM
+            val fromMe = distanceFromMe(
+                d, box.exactCenterX() - w / 2f, box.exactCenterY() - h / 2f
+            )
             val objLabel = if (fromMe > MAX_RANGE_M) "> 110 m" else formatDistance(fromMe)
             b.tvMain.text = objLabel
             b.tvMain.setTextColor(if (overRange) Color.rgb(160, 160, 160) else Color.WHITE)
             b.tvDetail.text = String.format(
-                "từ chỗ đứng · ± %.2f m · camera tới vật %.2f m · vật rộng %.0f cm",
-                res.uncertaintyM, d, estimator.vehicleWidthM * 100f
+                "từ bạn tới vật · ± %.2f m · vật rộng %.0f cm · %d px",
+                res.uncertaintyM, estimator.vehicleWidthM * 100f, box.width()
             )
             b.overlay.setResult(box, w, h, objLabel, false)
             return
@@ -498,6 +508,23 @@ class MainActivity : AppCompatActivity() {
         return (w / 2f) / tan(Math.toRadians(30.0)).toFloat()
     }
 
+    /**
+     * Công thức bề-ngang cho ra ĐỘ SÂU (khoảng cách vuông góc theo trục ống kính).
+     * Nếu vật lệch sang bên hoặc lên xuống so với tâm khung hình thì khoảng cách
+     * thẳng từ camera tới vật dài hơn độ sâu:
+     *
+     *      d_thẳng = d_sâu × căn(1 + (u/f)² + (v/f)²)
+     *
+     * u, v là độ lệch của vật so với tâm khung hình, tính bằng pixel.
+     * Sau đó cộng đoạn từ chỗ người đứng tới camera để ra con số cần hiển thị.
+     */
+    private fun distanceFromMe(depthM: Float, u: Float, v: Float): Float {
+        if (focalPx <= 0f) return depthM + originOffsetM
+        val a = u / focalPx
+        val c = v / focalPx
+        return depthM * sqrt(1f + a * a + c * c) + originOffsetM
+    }
+
     /** Luôn hiển thị theo mét. */
     private fun formatDistance(d: Float): String =
         if (d < 10f) String.format("%.2f m", d) else String.format("%.1f m", d)
@@ -505,6 +532,12 @@ class MainActivity : AppCompatActivity() {
     /** Đo bằng thước kẹp thủ công: bề ngang chính là khoảng cách hai vạch. */
     private fun renderCaliper(w: Int, h: Int) {
         b.overlay.setImageSize(w, h)
+        // Đặt sẵn hai vạch ở giữa khung ngay từ khung hình đầu tiên, để luôn có
+        // số đo mà không phải chờ người dùng kéo.
+        if (b.overlay.caliperX1 < 0f || b.overlay.caliperX2 < 0f) {
+            b.overlay.caliperX1 = w * 0.40f
+            b.overlay.caliperX2 = w * 0.60f
+        }
         val px = b.overlay.caliperWidthPx()
         if (px < 4f) {
             b.tvMain.text = "-- m"
@@ -515,13 +548,14 @@ class MainActivity : AppCompatActivity() {
         val res = estimator.update(px, focalPx, SystemClock.elapsedRealtime())
         if (res == null) { b.overlay.postInvalidate(); return }
 
-        val fromMe = res.distanceM + originOffsetM
+        val midX = (b.overlay.caliperX1 + b.overlay.caliperX2) / 2f
+        val fromMe = distanceFromMe(res.distanceM, midX - w / 2f, 0f)
         val label = if (fromMe > MAX_RANGE_M) "> 110 m" else formatDistance(fromMe)
         b.tvMain.text = label
         b.tvMain.setTextColor(Color.WHITE)
         b.tvDetail.text = String.format(
-            "từ chỗ đứng · ± %.2f m · camera tới vật %.2f m · vật rộng %.0f cm",
-            res.uncertaintyM, res.distanceM, estimator.vehicleWidthM * 100f
+            "từ bạn tới vật · ± %.2f m · vật rộng %.0f cm · %.0f px",
+            res.uncertaintyM, estimator.vehicleWidthM * 100f, px
         )
         b.overlay.setResult(null, w, h, label, false)
     }

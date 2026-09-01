@@ -73,6 +73,30 @@ Kết quả từ vùng cắt chỉ được dùng khi khung bao ở quét toàn 
 để biết con số đang đáng tin tới mức nào. Vượt quá 110 m thì hiện `> 110 m` thay
 vì đưa ra số vô nghĩa.
 
+## Chế độ 2: đo khoảng cách tới vật bất kỳ
+
+Bấm nút **Chế độ** ở góc trên phải để chuyển giữa hai chế độ.
+
+Ở chế độ **Vật bất kỳ** (đo tivi, cửa, tủ, người, thùng hàng...):
+
+1. Nhập **bề ngang thật của vật** theo cm, hoặc chọn nhanh trong danh sách
+   (TV 32/43/50/55/65 inch, màn hình 24 inch, cửa đi, người, tủ lạnh, xe máy, giấy A4).
+   Với tivi, bề ngang là chiều ngang của cả màn hình — TV 55 inch khoảng 122 cm.
+2. **Chạm vào vật trên màn hình** để chọn. App khoá vào vật đó và bám theo, số đo
+   hiện ngay góc trên trái. Dưới 1 m hiện theo cm, dưới 10 m hiện 2 chữ số thập phân.
+
+Nếu bộ nhận diện không bắt được vật (tường, mép bàn, khung cửa, vật quá phẳng),
+bật **Thước kẹp thủ công**: hai vạch vàng xuất hiện, kéo mỗi vạch trùng với một
+mép của vật, app đo bằng khoảng cách giữa hai vạch. Cách này đo được mọi thứ,
+miễn là bạn biết kích thước thật của nó.
+
+Chế độ vật thể dùng chung hệ số hiệu chỉnh với chế độ xe, nên hiệu chỉnh một lần
+là cả hai chế độ đều đúng. Ở chế độ này app không cảnh báo va chạm và không kêu bíp.
+
+Độ chính xác ở gần rất tốt: đo một chiếc tivi cách 3 m thường sai dưới 5 cm, vì
+ở khoảng cách gần vật chiếm nhiều pixel. Sai số tăng nhanh theo bình phương
+khoảng cách, đúng như dòng `± x.xx m` hiển thị kèm.
+
 ## Hiệu chỉnh tự động bằng GPS (nên làm một lần)
 
 Đúng với tình huống có xe đứng yên phía trước:

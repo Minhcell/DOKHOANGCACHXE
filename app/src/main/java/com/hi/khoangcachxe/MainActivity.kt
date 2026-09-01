@@ -81,6 +81,12 @@ class MainActivity : AppCompatActivity() {
     private var objectMode = false
     /** Bề ngang thật của vật cần đo, ở chế độ vật thể (mét). */
     private var objWidthM = 1.22f
+    /**
+     * Công thức camera cho ra khoảng cách từ *ống kính* tới vật. Người cầm máy
+     * đứng lùi phía sau ống kính một đoạn, nên cộng thêm đoạn này để ra khoảng
+     * cách thật từ chỗ đứng tới vật.
+     */
+    private var originOffsetM = 0.40f
     /** Vật đang được bám ở chế độ vật thể. */
     private var locked: Rect? = null
     private var pendingTapX = -1f
@@ -173,6 +179,16 @@ class MainActivity : AppCompatActivity() {
                     estimator.vehicleWidthM = objWidthM
                     estimator.reset()
                 }
+            }
+        })
+
+        b.etOffset.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b2: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b2: Int, c: Int) {}
+            override fun afterTextChanged(e: Editable?) {
+                val cm = e?.toString()?.toFloatOrNull() ?: return
+                if (cm < 0f || cm > 500f) return
+                originOffsetM = cm / 100f
             }
         })
 
@@ -414,13 +430,15 @@ class MainActivity : AppCompatActivity() {
         val label = if (overRange) "> 110 m" else formatDistance(d)
 
         if (objectMode) {
-            b.tvMain.text = label
+            val fromMe = d + originOffsetM
+            val objLabel = if (fromMe > MAX_RANGE_M) "> 110 m" else formatDistance(fromMe)
+            b.tvMain.text = objLabel
             b.tvMain.setTextColor(if (overRange) Color.rgb(160, 160, 160) else Color.WHITE)
             b.tvDetail.text = String.format(
-                "± %.2f m · bề ngang vật %.0f cm · %d px",
-                res.uncertaintyM, estimator.vehicleWidthM * 100f, box.width()
+                "từ chỗ đứng · ± %.2f m · camera tới vật %.2f m · vật rộng %.0f cm",
+                res.uncertaintyM, d, estimator.vehicleWidthM * 100f
             )
-            b.overlay.setResult(box, w, h, label, false)
+            b.overlay.setResult(box, w, h, objLabel, false)
             return
         }
 
@@ -480,11 +498,9 @@ class MainActivity : AppCompatActivity() {
         return (w / 2f) / tan(Math.toRadians(30.0)).toFloat()
     }
 
-    /** Hiển thị cm khi ở gần, m khi ở xa. */
+    /** Luôn hiển thị theo mét. */
     private fun formatDistance(d: Float): String =
-        if (d < 1f) String.format("%.0f cm", d * 100f)
-        else if (d < 10f) String.format("%.2f m", d)
-        else String.format("%.1f m", d)
+        if (d < 10f) String.format("%.2f m", d) else String.format("%.1f m", d)
 
     /** Đo bằng thước kẹp thủ công: bề ngang chính là khoảng cách hai vạch. */
     private fun renderCaliper(w: Int, h: Int) {
@@ -499,12 +515,13 @@ class MainActivity : AppCompatActivity() {
         val res = estimator.update(px, focalPx, SystemClock.elapsedRealtime())
         if (res == null) { b.overlay.postInvalidate(); return }
 
-        val label = if (res.distanceM > MAX_RANGE_M) "> 110 m" else formatDistance(res.distanceM)
+        val fromMe = res.distanceM + originOffsetM
+        val label = if (fromMe > MAX_RANGE_M) "> 110 m" else formatDistance(fromMe)
         b.tvMain.text = label
         b.tvMain.setTextColor(Color.WHITE)
         b.tvDetail.text = String.format(
-            "± %.2f m · bề ngang vật %.0f cm · %.0f px",
-            res.uncertaintyM, estimator.vehicleWidthM * 100f, px
+            "từ chỗ đứng · ± %.2f m · camera tới vật %.2f m · vật rộng %.0f cm",
+            res.uncertaintyM, res.distanceM, estimator.vehicleWidthM * 100f
         )
         b.overlay.setResult(null, w, h, label, false)
     }

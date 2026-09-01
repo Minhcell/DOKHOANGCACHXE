@@ -16,8 +16,12 @@ import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Bundle
 import android.os.SystemClock
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.Size
 import android.view.WindowManager
+import android.view.View
+import android.widget.AdapterView
 import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -73,6 +77,18 @@ class MainActivity : AppCompatActivity() {
     private var ownSpeedMs = -1f
     private var lastLocation: Location? = null
 
+    /** false = đo xe phía trước, true = đo vật bất kỳ. */
+    private var objectMode = false
+    /** Bề ngang thật của vật cần đo, ở chế độ vật thể (mét). */
+    private var objWidthM = 1.22f
+    /** Vật đang được bám ở chế độ vật thể. */
+    private var locked: Rect? = null
+    private var pendingTapX = -1f
+    private var pendingTapY = -1f
+
+    /** Kích thước (cm) tương ứng với danh sách chọn nhanh trong arrays.xml. */
+    private val presetCm = floatArrayOf(0f, 73f, 96f, 111f, 122f, 144f, 54f, 82f, 45f, 70f, 75f, 30f)
+
     /** Lịch sử bề ngang khung bao gần đây, dùng cho hiệu chỉnh tự động. */
     private val widthHist = ArrayDeque<Pair<Long, Float>>()
 
@@ -121,8 +137,9 @@ class MainActivity : AppCompatActivity() {
     private fun setupControls() {
         b.sbWidth.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) {
-                estimator.vehicleWidthM = (140 + p) / 100f
-                b.tvWidth.text = String.format("Bề ngang xe trước: %.2f m", estimator.vehicleWidthM)
+                val wm = (140 + p) / 100f
+                if (!objectMode) estimator.vehicleWidthM = wm
+                b.tvWidth.text = String.format("Bề ngang xe trước: %.2f m", wm)
             }
             override fun onStartTrackingTouch(s: SeekBar?) {}
             override fun onStopTrackingTouch(s: SeekBar?) {}
@@ -143,7 +160,76 @@ class MainActivity : AppCompatActivity() {
         b.btnTruck.setOnClickListener { b.sbWidth.progress = 105 }  // 2.45 m
         b.btnCalib.setOnClickListener { onCalibClick() }
 
+        b.btnMode.setOnClickListener { setMode(!objectMode) }
+
+        b.etObjW.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b2: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b2: Int, c: Int) {}
+            override fun afterTextChanged(e: Editable?) {
+                val cm = e?.toString()?.toFloatOrNull() ?: return
+                if (cm < 2f || cm > 1500f) return
+                objWidthM = cm / 100f
+                if (objectMode) {
+                    estimator.vehicleWidthM = objWidthM
+                    estimator.reset()
+                }
+            }
+        })
+
+        b.spPreset.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                if (pos <= 0 || pos >= presetCm.size) return
+                b.etObjW.setText(presetCm[pos].toInt().toString())
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+
+        b.btnCaliper.setOnClickListener {
+            b.overlay.caliperEnabled = !b.overlay.caliperEnabled
+            b.overlay.resetCaliper()
+            estimator.reset()
+            locked = null
+            b.btnCaliper.text =
+                if (b.overlay.caliperEnabled) "Thước kẹp thủ công: BẬT" else "Thước kẹp thủ công: TẮT"
+            b.tvObjHint.text =
+                if (b.overlay.caliperEnabled) "Kéo hai vạch vàng trùng hai mép của vật"
+                else "Chạm vào vật trên màn hình để chọn"
+        }
+
+        b.overlay.onTap = { x, y ->
+            if (objectMode) { pendingTapX = x; pendingTapY = y }
+        }
+
         b.tvInfo.text = "Tầm đo: 1 - 110 m"
+    }
+
+    /** Chuyển giữa chế độ đo xe phía trước và chế độ đo vật bất kỳ. */
+    private fun setMode(toObject: Boolean) {
+        objectMode = toObject
+        locked = null
+        lastBox = null
+        pendingTapX = -1f
+        b.overlay.caliperEnabled = false
+        b.overlay.resetCaliper()
+        b.btnCaliper.text = "Thước kẹp thủ công: TẮT"
+        estimator.reset()
+
+        if (objectMode) {
+            b.btnMode.text = "Chế độ: Vật bất kỳ"
+            b.panelObject.visibility = View.VISIBLE
+            b.tvInfo.text = "Đo vật: nhập bề ngang thật rồi chạm vào vật"
+            estimator.vehicleWidthM = objWidthM
+            // vật đứng yên, người cầm máy -> làm mượt mạnh hơn
+            estimator.processAccel = 0.6f
+        } else {
+            b.btnMode.text = "Chế độ: Xe đang chạy"
+            b.panelObject.visibility = View.GONE
+            b.tvInfo.text = "Tầm đo: 1 - 110 m"
+            estimator.vehicleWidthM = (140 + b.sbWidth.progress) / 100f
+            estimator.processAccel = 3.0f
+        }
+        b.tvMain.text = "-- m"
+        b.overlay.setResult(null, 0, 0, "", false)
     }
 
     // ---------------------------------------------------------------- camera
@@ -222,6 +308,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Thước kẹp thủ công: không cần nhận diện, chỉ lấy khoảng cách hai vạch.
+        if (objectMode && b.overlay.caliperEnabled) {
+            runOnUiThread { renderCaliper(w, h) }
+            bmp.recycle()
+            busy.set(false)
+            return
+        }
+
         val near = detNear
         val far = detFar
         if (near == null || far == null) { busy.set(false); return }
@@ -242,7 +336,8 @@ class MainActivity : AppCompatActivity() {
                     Bitmap.createBitmap(bmp, roi.left, roi.top, rw, rh)
                 } catch (e: Exception) { null }
 
-                if (crop == null) {
+                if (crop == null || objectMode) {
+                    crop?.recycle()
                     finishFrame(nearObjs, emptyList(), roi, w, h)
                     bmp.recycle()
                 } else {
@@ -271,11 +366,15 @@ class MainActivity : AppCompatActivity() {
         }
         val nearRects = nearObjs.map { it.boundingBox }
 
-        val bestNear = pickBest(nearRects, w, h)
-        // Xe gần thì quét toàn khung đã đủ; chỉ khi khung bao nhỏ (xe ở xa) mới
-        // ưu tiên kết quả từ vùng cắt vì ở đó xe được phóng to ~3 lần.
-        val best = if (bestNear != null && bestNear.width() > w * 0.09f) bestNear
-        else pickBest(mapped, w, h) ?: bestNear
+        val best = if (objectMode) {
+            pickObject(nearRects, w, h)
+        } else {
+            val bestNear = pickBest(nearRects, w, h)
+            // Xe gần thì quét toàn khung đã đủ; chỉ khi khung bao nhỏ (xe ở xa) mới
+            // ưu tiên kết quả từ vùng cắt vì ở đó xe được phóng to ~3 lần.
+            if (bestNear != null && bestNear.width() > w * 0.09f) bestNear
+            else pickBest(mapped, w, h) ?: bestNear
+        }
 
         runOnUiThread { render(best, w, h) }
         busy.set(false)
@@ -283,15 +382,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun render(box: Rect?, w: Int, h: Int) {
         val now = SystemClock.elapsedRealtime()
+        b.overlay.setImageSize(w, h)
 
         if (box == null) {
             if (now - lastSeen > 900) {
                 lastBox = null
+                if (objectMode) locked = null
                 estimator.reset()
                 widthHist.clear()
                 b.tvMain.text = "-- m"
                 b.tvMain.setTextColor(Color.WHITE)
-                b.tvDetail.text = "Không thấy xe phía trước" + gpsSuffix()
+                b.tvDetail.text =
+                    if (objectMode) "Chưa chọn được vật - chạm vào vật, hoặc bật thước kẹp"
+                    else "Không thấy xe phía trước" + gpsSuffix()
                 b.overlay.setResult(null, w, h, "", false)
             }
             return
@@ -308,7 +411,18 @@ class MainActivity : AppCompatActivity() {
 
         val d = res.distanceM
         val overRange = d > MAX_RANGE_M
-        val label = if (overRange) "> 110 m" else String.format("%.1f m", d)
+        val label = if (overRange) "> 110 m" else formatDistance(d)
+
+        if (objectMode) {
+            b.tvMain.text = label
+            b.tvMain.setTextColor(if (overRange) Color.rgb(160, 160, 160) else Color.WHITE)
+            b.tvDetail.text = String.format(
+                "± %.2f m · bề ngang vật %.0f cm · %d px",
+                res.uncertaintyM, estimator.vehicleWidthM * 100f, box.width()
+            )
+            b.overlay.setResult(box, w, h, label, false)
+            return
+        }
 
         val safeD = if (ownSpeedMs > 1.5f) ownSpeedMs * 2f else -1f
         val alert = !overRange &&
@@ -364,6 +478,81 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
         }
         return (w / 2f) / tan(Math.toRadians(30.0)).toFloat()
+    }
+
+    /** Hiển thị cm khi ở gần, m khi ở xa. */
+    private fun formatDistance(d: Float): String =
+        if (d < 1f) String.format("%.0f cm", d * 100f)
+        else if (d < 10f) String.format("%.2f m", d)
+        else String.format("%.1f m", d)
+
+    /** Đo bằng thước kẹp thủ công: bề ngang chính là khoảng cách hai vạch. */
+    private fun renderCaliper(w: Int, h: Int) {
+        b.overlay.setImageSize(w, h)
+        val px = b.overlay.caliperWidthPx()
+        if (px < 4f) {
+            b.tvMain.text = "-- m"
+            b.tvDetail.text = "Kéo hai vạch vàng trùng hai mép của vật"
+            b.overlay.postInvalidate()
+            return
+        }
+        val res = estimator.update(px, focalPx, SystemClock.elapsedRealtime())
+        if (res == null) { b.overlay.postInvalidate(); return }
+
+        val label = if (res.distanceM > MAX_RANGE_M) "> 110 m" else formatDistance(res.distanceM)
+        b.tvMain.text = label
+        b.tvMain.setTextColor(Color.WHITE)
+        b.tvDetail.text = String.format(
+            "± %.2f m · bề ngang vật %.0f cm · %.0f px",
+            res.uncertaintyM, estimator.vehicleWidthM * 100f, px
+        )
+        b.overlay.setResult(null, w, h, label, false)
+    }
+
+    /**
+     * Chọn vật ở chế độ đo vật bất kỳ.
+     * Ưu tiên: vật vừa được chạm > vật đang bám > vật lớn nhất gần tâm.
+     * Không áp dụng các ràng buộc dành cho xe trên đường (nằm dưới, tỉ lệ ngang).
+     */
+    private fun pickObject(rects: List<Rect>, w: Int, h: Int): Rect? {
+        if (rects.isEmpty()) return null
+
+        if (pendingTapX >= 0f) {
+            val tx = pendingTapX
+            val ty = pendingTapY
+            pendingTapX = -1f
+            val hit = rects.filter { it.contains(tx.toInt(), ty.toInt()) }
+                .minByOrNull { it.width() * it.height() }
+                ?: rects.minByOrNull {
+                    val dx = it.exactCenterX() - tx
+                    val dy = it.exactCenterY() - ty
+                    dx * dx + dy * dy
+                }
+            if (hit != null) {
+                locked = hit
+                estimator.reset()
+                return hit
+            }
+        }
+
+        locked?.let { lk ->
+            val near = rects.minByOrNull {
+                val dx = it.exactCenterX() - lk.exactCenterX()
+                val dy = it.exactCenterY() - lk.exactCenterY()
+                dx * dx + dy * dy
+            }
+            if (near != null) {
+                val dx = abs(near.exactCenterX() - lk.exactCenterX()) / w
+                val dy = abs(near.exactCenterY() - lk.exactCenterY()) / h
+                if (dx < 0.25f && dy < 0.25f) { locked = near; return near }
+            }
+        }
+
+        return rects.filter { it.width() >= 10 && it.height() >= 10 }
+            .maxByOrNull {
+                val cx = it.exactCenterX() / w
+                it.width().toFloat() * (1f - abs(cx - 0.5f))
+            }
     }
 
     private fun pickBest(rects: List<Rect>, w: Int, h: Int): Rect? {

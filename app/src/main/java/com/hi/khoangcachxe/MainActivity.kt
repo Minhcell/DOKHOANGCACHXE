@@ -46,11 +46,17 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val MAX_RANGE_M = 110f
+        // Vùng cắt phóng to ở giữa khung hình để bắt vật ở xa
+        const val ROI_W = 0.34f   // 34% chiều rộng
+        const val ROI_H = 0.42f   // 42% chiều cao
     }
 
     private lateinit var b: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
-    private var detector: ObjectDetector? = null
+    
+    private var detNear: ObjectDetector? = null   // quét toàn khung
+    private var detFar: ObjectDetector? = null    // quét vùng cắt phóng to
+
     private val busy = AtomicBoolean(false)
 
     private val estimator = DistanceEstimator()
@@ -79,13 +85,13 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
         tone = try { ToneGenerator(AudioManager.STREAM_MUSIC, 90) } catch (e: Exception) { null }
 
-        detector = ObjectDetection.getClient(
-            ObjectDetectorOptions.Builder()
-                .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
-                .enableMultipleObjects()
-                .enableClassification()
-                .build()
-        )
+        val opts = ObjectDetectorOptions.Builder()
+            .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
+            .enableMultipleObjects()
+            .enableClassification()
+            .build()
+        detNear = ObjectDetection.getClient(opts)
+        detFar = ObjectDetection.getClient(opts)
 
         val need = mutableListOf<String>()
         if (!granted(Manifest.permission.CAMERA)) need += Manifest.permission.CAMERA
@@ -164,17 +170,65 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val det = detector
-        if (det == null) { busy.set(false); return }
+        val near = detNear
+        val far = detFar
+        if (near == null || far == null) { busy.set(false); return }
 
-        det.process(InputImage.fromBitmap(bmp, 0))
-            .addOnSuccessListener { objs ->
-                val best = pickBest(objs, w, h)
-                runOnUiThread { render(best, w, h) }
-                bmp.recycle()
-                busy.set(false)
+        // Vùng cắt ở giữa khung, phóng to để bắt vật ở xa
+        val rw = (w * ROI_W).roundToInt()
+        val rh = (h * ROI_H).roundToInt()
+        val rx = ((w - rw) / 2).roundToInt()
+        val ry = ((h - rh) / 2).roundToInt()
+        val roi = Rect(rx, ry, rx + rw, ry + rh)
+
+        // Quét toàn khung
+        near.process(InputImage.fromBitmap(bmp, 0))
+            .addOnSuccessListener { nearObjs ->
+                // Quét vùng cắt để bắt vật ở xa
+                val crop = try { Bitmap.createBitmap(bmp, roi.left, roi.top, rw, rh) } catch (e: Exception) { null }
+                if (crop == null) {
+                    finishFrame(nearObjs, emptyList(), roi, w, h)
+                    bmp.recycle()
+                } else {
+                    far.process(InputImage.fromBitmap(crop, 0))
+                        .addOnSuccessListener { farObjs -> finishFrame(nearObjs, farObjs, roi, w, h) }
+                        .addOnFailureListener { finishFrame(nearObjs, emptyList(), roi, w, h) }
+                        .addOnCompleteListener { crop.recycle(); bmp.recycle() }
+                }
             }
             .addOnFailureListener { bmp.recycle(); busy.set(false) }
+    }
+
+    private fun finishFrame(
+        nearObjs: List<DetectedObject>,
+        farObjs: List<DetectedObject>,
+        roi: Rect,
+        w: Int,
+        h: Int
+    ) {
+        // Đưa toạ độ vùng cắt về toạ độ khung hình đầy đủ
+        val mappedFar = farObjs.map {
+            DetectedObject(
+                Rect(
+                    it.boundingBox.left + roi.left,
+                    it.boundingBox.top + roi.top,
+                    it.boundingBox.right + roi.left,
+                    it.boundingBox.bottom + roi.top
+                ),
+                it.trackingId,
+                it.labels
+            )
+        }
+
+        // Ưu tiên vật từ vùng cắt nếu khung bao ở quét toàn khung quá nhỏ
+        val nearRects = nearObjs.map { it.boundingBox }
+        val bestNear = pickBest(nearObjs, w, h)
+        
+        val best = if (bestNear != null && bestNear.width() > w * 0.09f) bestNear
+        else pickBest(mappedFar, w, h)
+
+        runOnUiThread { render(best, w, h) }
+        busy.set(false)
     }
 
     private fun render(obj: DetectedObject?, w: Int, h: Int) {
@@ -271,7 +325,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
-        detector?.close()
+        detNear?.close()
+        detFar?.close()
         tone?.release()
     }
 }

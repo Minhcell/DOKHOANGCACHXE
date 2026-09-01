@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="object_presets">
+        <item>Tự nhập kích thước</item>
+        <item>TV 32 inch — 73 cm</item>
+        <item>TV 43 inch — 96 cm</item>
+        <item>TV 50 inch — 111 cm</item>
+        <item>TV 55 inch — 122 cm</item>
+        <item>TV 65 inch — 144 cm</item>
+        <item>Màn hình 24 inch — 54 cm</item>
+        <item>Cửa đi — 82 cm</item>
+        <item>Người lớn (vai) — 45 cm</item>
+        <item>Tủ lạnh — 70 cm</item>
+        <item>Xe máy — 75 cm</item>
+        <item>Giấy A4 ngang — 30 cm</item>
+    </string-array>
+</resources>

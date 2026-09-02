@@ -231,6 +231,7 @@ class MainActivity : AppCompatActivity() {
         b.tvMain.text = label
         val det = "$objLabel · ±%.1fm".format(res.uncertaintyM)
         var alert = false
+        
         if (modeVehicle && isVehicle(objLabel)) {
             val spd = if (currentSpeedKmh > 0) currentSpeedKmh else 80f
             val min = SafeDistance.getMinDistance(spd)
@@ -245,6 +246,8 @@ class MainActivity : AppCompatActivity() {
         } else {
             b.tvDetail.text = det; b.tvMain.setTextColor(Color.WHITE)
         }
+        
+        // GỌI setResult() để hiển thị khung bao
         b.overlay.setResult(box, w, h, label, alert)
     }
 

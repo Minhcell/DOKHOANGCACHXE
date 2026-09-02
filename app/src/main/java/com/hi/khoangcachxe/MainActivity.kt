@@ -267,6 +267,7 @@ class MainActivity : AppCompatActivity() {
     }
 }
 
+@Suppress("DEPRECATION")
 class GpsListener(val onSpeed: (Float) -> Unit) : LocationListener {
     override fun onLocationChanged(location: Location) {
         onSpeed(if (location.hasSpeed()) location.speed * 3.6f else -1f)

@@ -38,6 +38,7 @@ import com.hi.khoangcachxe.databinding.ActivityMainBinding
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.tan
 
 class MainActivity : AppCompatActivity() {
@@ -52,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private var modeVehicle = false
     private var lastBeepViolation = 0L
     private var currentSpeedKmh = -1f
+    private var lastFrontBox: Rect? = null
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -84,9 +86,9 @@ class MainActivity : AppCompatActivity() {
     private fun granted(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
 
     private fun reset() {
-        estimator.reset(); lastSeen = 0L
+        estimator.reset(); lastSeen = 0L; lastFrontBox = null
         b.tvMain.text = "-- m"; b.tvDetail.text = ""
-        b.tvModeInfo.text = if (modeVehicle) "Chế độ: Xe (cảnh báo khoảng cách)" else "Chế độ: Vật thể"
+        b.tvModeInfo.text = if (modeVehicle) "Chế độ: Xe phía trước" else "Chế độ: Vật thể"
     }
 
     private fun startCamera() {
@@ -120,7 +122,9 @@ class MainActivity : AppCompatActivity() {
             val lm = getSystemService(LocationManager::class.java)
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500, 0f, object : LocationListener {
                 override fun onLocationChanged(location: Location) {
-                    currentSpeedKmh = if (location.hasSpeed()) location.speed * 3.6f else -1f
+                    if (location.hasSpeed()) {
+                        currentSpeedKmh = location.speed * 3.6f
+                    }
                 }
                 override fun onProviderEnabled(provider: String) {}
                 override fun onProviderDisabled(provider: String) {}
@@ -145,7 +149,8 @@ class MainActivity : AppCompatActivity() {
             
             detector?.process(InputImage.fromBitmap(img, 0))
                 ?.addOnSuccessListener { objs ->
-                    val best = pickBest(objs, img.width, img.height)
+                    val best = if (modeVehicle) pickFrontVehicle(objs, img.width, img.height) 
+                               else pickBest(objs, img.width, img.height)
                     runOnUiThread { render(best, img.width, img.height) }
                     img.recycle()
                 }
@@ -154,6 +159,42 @@ class MainActivity : AppCompatActivity() {
             proxy.close()
             busy.set(false)
         }
+    }
+
+    // Chỉ bám xe phía trước (làn xe mình, vị trí giữa-dưới)
+    private fun pickFrontVehicle(objs: List<DetectedObject>, w: Int, h: Int): DetectedObject? {
+        var best: DetectedObject? = null
+        var bestScore = 0f
+        
+        for (o in objs) {
+            val r = o.boundingBox
+            val bw = r.width().toFloat()
+            val bh = r.height().toFloat()
+            if (bw < 8f || bh < 6f || bw > w * 0.92f) continue
+            
+            val cx = r.exactCenterX() / w
+            val cy = r.exactCenterY() / h
+            
+            // Chỉ bám xe ở giữa khung hình (0.35 - 0.65) - làn xe mình
+            if (cx < 0.35f || cx > 0.65f) continue
+            
+            // Xe phía trước thường ở phần dưới khung hình (0.4 - 1.0)
+            if (cy < 0.4f || cy > 1.0f) continue
+            
+            val label = o.labels.firstOrNull()?.text ?: "obj"
+            
+            // Chỉ lấy xe (car, truck, bus)
+            if (!isVehicle(label)) continue
+            
+            // Ưu tiên xe ở dưới (gần hơn)
+            val score = bw / w * cy
+            if (score > bestScore) {
+                bestScore = score
+                best = o
+                estimator.vehicleWidthM = ObjectSize.getWidth(label)
+            }
+        }
+        return best
     }
 
     private fun pickBest(objs: List<DetectedObject>, w: Int, h: Int): DetectedObject? {
@@ -177,13 +218,23 @@ class MainActivity : AppCompatActivity() {
         return best
     }
 
+    private fun isVehicle(label: String): Boolean {
+        val l = label.lowercase()
+        return l.contains("car") || l.contains("truck") || l.contains("bus") || l.contains("vehicle")
+    }
+
     private fun render(obj: DetectedObject?, w: Int, h: Int) {
         val now = SystemClock.elapsedRealtime()
         b.overlay.setImageSize(w, h)
         
+        // Hiển thị tốc độ GPS trên màn hình
+        val gpsSpeedStr = if (currentSpeedKmh > 0) String.format("GPS: %.0f km/h", currentSpeedKmh) else "GPS: chờ..."
+        b.tvInfo.text = gpsSpeedStr
+        
         if (obj == null) {
             if (now - lastSeen > 900) {
                 estimator.reset()
+                lastFrontBox = null
                 b.tvMain.text = "-- m"
                 b.tvMain.setTextColor(Color.WHITE)
                 b.tvDetail.text = ""
@@ -195,9 +246,9 @@ class MainActivity : AppCompatActivity() {
         
         lastSeen = now
         val box = obj.boundingBox
+        lastFrontBox = box
         val bw = box.width().toFloat()
         
-        // Chỉ update khi focalPx hợp lệ
         if (focalPx <= 0f) {
             b.overlay.box = box
             b.overlay.invalidate()
@@ -212,22 +263,26 @@ class MainActivity : AppCompatActivity() {
         }
         
         val d = res.distanceM
-        if (!d.isFinite()) {
+        if (!d.isFinite() || d > 110f) {
+            b.tvMain.text = "> 110 m"
+            b.tvMain.setTextColor(Color.GRAY)
+            b.tvDetail.text = ""
             b.overlay.box = box
+            b.overlay.alert = false
             b.overlay.invalidate()
             return
         }
         
         val objLabel = obj.labels.firstOrNull()?.text ?: "obj"
-        val label = if (d > 110) "> 110 m" else String.format("%.2f m", d)
+        val label = String.format("%.1f m", d)
         
         b.tvMain.text = label
         b.overlay.box = box
         
         var detail = "$objLabel · ±" + String.format("%.2f", res.uncertaintyM) + "m"
         
-        if (modeVehicle) {
-            val spd = if (currentSpeedKmh > 0) currentSpeedKmh else 80f
+        if (modeVehicle && currentSpeedKmh > 0) {
+            val spd = currentSpeedKmh
             val min = SafeDistance.getMinDistance(spd)
             val spdInt = spd.toInt()
             val minInt = min.toInt()
@@ -247,6 +302,10 @@ class MainActivity : AppCompatActivity() {
                 b.overlay.alert = false
                 detail = "✓ AN TOÀN: ${d.toInt()}m ≥ ${minInt}m @ ${spdInt}km/h"
             }
+        } else if (modeVehicle) {
+            b.tvMain.setTextColor(Color.YELLOW)
+            b.overlay.alert = false
+            detail = "⏳ Chờ tốc độ GPS... · ${d.toInt()}m"
         } else {
             b.tvMain.setTextColor(Color.WHITE)
             b.overlay.alert = false

@@ -86,7 +86,7 @@ class MainActivity : AppCompatActivity() {
     private fun reset() {
         estimator.reset(); lastSeen = 0L
         b.tvMain.text = "-- m"; b.tvDetail.text = ""
-        b.tvModeInfo.text = if (modeVehicle) "Chế độ: Xe chạy" else "Chế độ: Vật thể"
+        b.tvModeInfo.text = if (modeVehicle) "Chế độ: Xe (cảnh báo khoảng cách)" else "Chế độ: Vật thể"
     }
 
     private fun startCamera() {
@@ -167,7 +167,6 @@ class MainActivity : AppCompatActivity() {
             val cx = r.exactCenterX() / w
             if (cx < 0.15f || cx > 0.85f) continue
             val label = o.labels.firstOrNull()?.text ?: "obj"
-            if (modeVehicle && !isVehicle(label)) continue
             val score = bw / w
             if (score > bestScore) {
                 bestScore = score
@@ -176,11 +175,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return best
-    }
-
-    private fun isVehicle(label: String): Boolean {
-        val l = label.lowercase()
-        return l.contains("car") || l.contains("truck") || l.contains("bus") || l.contains("vehicle")
     }
 
     private fun render(obj: DetectedObject?, w: Int, h: Int) {
@@ -202,38 +196,64 @@ class MainActivity : AppCompatActivity() {
         lastSeen = now
         val box = obj.boundingBox
         val bw = box.width().toFloat()
-        val res = estimator.update(bw, focalPx, now) ?: return
+        
+        // Chỉ update khi focalPx hợp lệ
+        if (focalPx <= 0f) {
+            b.overlay.box = box
+            b.overlay.invalidate()
+            return
+        }
+        
+        val res = estimator.update(bw, focalPx, now)
+        if (res == null) {
+            b.overlay.box = box
+            b.overlay.invalidate()
+            return
+        }
+        
         val d = res.distanceM
+        if (!d.isFinite()) {
+            b.overlay.box = box
+            b.overlay.invalidate()
+            return
+        }
+        
         val objLabel = obj.labels.firstOrNull()?.text ?: "obj"
         val label = if (d > 110) "> 110 m" else String.format("%.2f m", d)
         
         b.tvMain.text = label
         b.overlay.box = box
-        b.overlay.invalidate()
         
-        var alert = false
-        if (modeVehicle && isVehicle(objLabel)) {
+        var detail = "$objLabel · ±" + String.format("%.2f", res.uncertaintyM) + "m"
+        
+        if (modeVehicle) {
             val spd = if (currentSpeedKmh > 0) currentSpeedKmh else 80f
             val min = SafeDistance.getMinDistance(spd)
+            val spdInt = spd.toInt()
+            val minInt = min.toInt()
+            
             if (d < min) {
-                alert = true
-                b.tvDetail.text = "$objLabel · CẢNH BÁO: min ${min.toInt()}m @ ${spd.toInt()}km/h"
                 b.tvMain.setTextColor(Color.rgb(255, 60, 60))
+                b.overlay.alert = true
+                detail = "⚠️ VI PHẠM: ${d.toInt()}m < ${minInt}m @ ${spdInt}km/h"
+                
                 val now2 = SystemClock.elapsedRealtime()
                 if (now2 - lastBeepViolation > 1000) {
                     lastBeepViolation = now2
                     try { tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 200) } catch (e: Exception) {}
                 }
             } else {
-                b.tvDetail.text = "$objLabel · ok (min ${min.toInt()}m)"
                 b.tvMain.setTextColor(Color.WHITE)
+                b.overlay.alert = false
+                detail = "✓ AN TOÀN: ${d.toInt()}m ≥ ${minInt}m @ ${spdInt}km/h"
             }
         } else {
-            b.tvDetail.text = objLabel + " · ±" + String.format("%.1f", res.uncertaintyM) + "m"
             b.tvMain.setTextColor(Color.WHITE)
+            b.overlay.alert = false
         }
         
-        b.overlay.alert = alert
+        b.tvDetail.text = detail
+        b.overlay.invalidate()
     }
 
     private fun computeFocalPx(w: Int, h: Int): Float {

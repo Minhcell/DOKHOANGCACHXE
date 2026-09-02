@@ -1,6 +1,7 @@
 package com.hi.khoangcachxe
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -8,14 +9,13 @@ import android.graphics.Matrix
 import android.graphics.Rect
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
-import android.media.AudioManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Bundle
 import android.os.SystemClock
-import android.annotation.SuppressLint
 import android.util.Size
 import android.view.WindowManager
 import android.widget.Toast
@@ -43,7 +43,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.tan
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), LocationListener {
 
     companion object {
         const val MAX_RANGE_M = 110f
@@ -67,30 +67,15 @@ class MainActivity : AppCompatActivity() {
 
     private val widthHist = ArrayDeque<Pair<Long, Float>>()
 
-    // Chế độ: false = vật thể (mặc định), true = xe đang chạy
     private var modeVehicle = false
     private var lastBeepViolation = 0L
-    
-    // GPS: lấy tốc độ hiện tại (km/h)
     private var currentSpeedKmh = -1f
-    private var lastLocationUpdate = 0L
-
-    private val locationListener = object : LocationListener {
-        override fun onLocationChanged(location: Location) {
-            currentSpeedKmh = if (location.hasSpeed()) location.speed * 3.6f else -1f
-            lastLocationUpdate = SystemClock.elapsedRealtime()
-        }
-        override fun onProviderDisabled(provider: String) {}
-        override fun onProviderEnabled(provider: String) {}
-        @Deprecated("Deprecated", replaceWith = ReplaceWith(""), level = DeprecationLevel.HIDDEN)
-        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
-    }
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
         if (result[Manifest.permission.CAMERA] == true) startCamera()
-        else Toast.makeText(this, "Ứng dụng cần quyền Camera", Toast.LENGTH_LONG).show()
+        else Toast.makeText(this, "Cần quyền Camera", Toast.LENGTH_LONG).show()
         if (result[Manifest.permission.ACCESS_FINE_LOCATION] == true) startGps()
     }
 
@@ -140,23 +125,17 @@ class MainActivity : AppCompatActivity() {
         future.addListener({
             try {
                 val provider = future.get()
-
                 val selector = ResolutionSelector.Builder()
                     .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
                     .setResolutionStrategy(
-                        ResolutionStrategy(
-                            Size(1920, 1080),
-                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
-                        )
+                        ResolutionStrategy(Size(1920, 1080),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
                     ).build()
 
                 val preview = Preview.Builder()
-                    .setResolutionSelector(
-                        ResolutionSelector.Builder()
-                            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
-                            .build()
-                    ).build()
-                    .also { it.setSurfaceProvider(b.previewView.surfaceProvider) }
+                    .setResolutionSelector(ResolutionSelector.Builder()
+                        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY).build())
+                    .build().also { it.setSurfaceProvider(b.previewView.surfaceProvider) }
 
                 val analysis = ImageAnalysis.Builder()
                     .setResolutionSelector(selector)
@@ -169,10 +148,28 @@ class MainActivity : AppCompatActivity() {
                 provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
                 b.tvDetail.text = "Quay camera vào vật để đo khoảng cách..."
             } catch (e: Exception) {
-                b.tvDetail.text = "Lỗi camera: ${e.message}"
+                b.tvDetail.text = "Lỗi camera"
             }
         }, ContextCompat.getMainExecutor(this))
     }
+
+    @SuppressLint("MissingPermission")
+    private fun startGps() {
+        try {
+            val lm = getSystemService(LocationManager::class.java)
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500L, 0f, this)
+        } catch (e: Exception) {
+            Toast.makeText(this, "GPS lỗi", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onLocationChanged(location: Location) {
+        currentSpeedKmh = if (location.hasSpeed()) location.speed * 3.6f else -1f
+    }
+
+    override fun onProviderEnabled(provider: String) {}
+    override fun onProviderDisabled(provider: String) {}
+    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
 
     private fun onFrame(proxy: ImageProxy) {
         if (!busy.compareAndSet(false, true)) { proxy.close(); return }
@@ -238,9 +235,7 @@ class MainActivity : AppCompatActivity() {
         h: Int
     ) {
         val bestNear = pickBest(nearObjs, w, h)
-        val best: DetectedObject?
-
-        best = if (bestNear != null && bestNear.boundingBox.width() > w * 0.09f) {
+        val best: DetectedObject? = if (bestNear != null && bestNear.boundingBox.width() > w * 0.09f) {
             bestNear
         } else {
             pickBestFar(farObjs, roi, w, h)
@@ -265,15 +260,7 @@ class MainActivity : AppCompatActivity() {
             if (r.bottom < h * 0.25f) continue
 
             val label = o.labels.firstOrNull()?.text ?: "object"
-            val labelLower = label.lowercase()
-
-            // Chế độ xe: chỉ lấy loại xe
-            if (modeVehicle) {
-                if (!labelLower.contains("car") && !labelLower.contains("truck") && 
-                    !labelLower.contains("bus") && !labelLower.contains("vehicle")) {
-                    continue
-                }
-            }
+            if (modeVehicle && !isVehicle(label)) continue
 
             val score = bw / w * (1f - abs(cx - 0.5f))
             if (score > bestScore) {
@@ -296,25 +283,15 @@ class MainActivity : AppCompatActivity() {
             if (bw < 8f || bh < 6f) continue
 
             val mappedLeft = r.left + roi.left
-            val mappedTop = r.top + roi.top
             val mappedRight = r.right + roi.left
-            val mappedBottom = r.bottom + roi.top
             val mappedW = mappedRight - mappedLeft
-
             if (mappedW > w * 0.92f) continue
 
             val cx = (mappedLeft + mappedRight) / 2f / w
             if (cx < 0.15f || cx > 0.85f) continue
 
             val label = o.labels.firstOrNull()?.text ?: "object"
-            val labelLower = label.lowercase()
-
-            if (modeVehicle) {
-                if (!labelLower.contains("car") && !labelLower.contains("truck") && 
-                    !labelLower.contains("bus") && !labelLower.contains("vehicle")) {
-                    continue
-                }
-            }
+            if (modeVehicle && !isVehicle(label)) continue
 
             val score = bw / w
             if (score > bestScore) {
@@ -324,6 +301,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return best
+    }
+
+    private fun isVehicle(label: String): Boolean {
+        val l = label.lowercase()
+        return l.contains("car") || l.contains("truck") || l.contains("bus") || l.contains("vehicle")
     }
 
     private fun render(obj: DetectedObject?, w: Int, h: Int) {
@@ -359,27 +341,25 @@ class MainActivity : AppCompatActivity() {
         val label = if (overRange) "> 110 m" else String.format("%.2f m", d)
 
         val objLabel = obj.labels.firstOrNull()?.text ?: "vat"
-        val isVehicle = objLabel.lowercase().contains("car") || objLabel.lowercase().contains("truck") || 
-                       objLabel.lowercase().contains("bus") || objLabel.lowercase().contains("vehicle")
+        val isVehicleObj = isVehicle(objLabel)
 
         b.tvMain.text = label
 
         val detail = StringBuilder()
         detail.append("$objLabel · ± %.2f m".format(res.uncertaintyM))
 
-        // Cảnh báo khoảng cách an toàn nếu chế độ xe và là xe
         var isAlert = false
-        if (modeVehicle && isVehicle) {
-            val speedKmh = if (currentSpeedKmh > 0f) currentSpeedKmh else 80f  // từ GPS, fallback 80 km/h
+        if (modeVehicle && isVehicleObj) {
+            val speedKmh = if (currentSpeedKmh > 0f) currentSpeedKmh else 80f
             val minDist = SafeDistance.getMinDistance(speedKmh)
             val violation = SafeDistance.isViolation(d, speedKmh)
-            
+
             if (violation) {
                 isAlert = true
-                val spd = if (currentSpeedKmh > 0f) String.format("%.0f", currentSpeedKmh) else "?"
-                detail.append(" · CẢNH BÁO @ ${spd}km/h: tối thiểu $minDist m")
+                val spd = String.format("%.0f", speedKmh)
+                detail.append(" · CẢNH BÁO @ ${spd}km/h: min $minDist m")
                 b.tvMain.setTextColor(Color.rgb(255, 60, 60))
-                
+
                 val now2 = SystemClock.elapsedRealtime()
                 if (now2 - lastBeepViolation > 1000) {
                     lastBeepViolation = now2
@@ -387,7 +367,7 @@ class MainActivity : AppCompatActivity() {
                 }
             } else {
                 b.tvMain.setTextColor(if (overRange) Color.rgb(160, 160, 160) else Color.WHITE)
-                detail.append(" · an toàn (tối thiểu $minDist m)")
+                detail.append(" · ok (min $minDist m)")
             }
         } else {
             b.tvMain.setTextColor(if (overRange) Color.rgb(160, 160, 160) else Color.WHITE)
@@ -413,22 +393,11 @@ class MainActivity : AppCompatActivity() {
         return (w / 2f) / tan(Math.toRadians(30.0)).toFloat()
     }
 
-    @android.annotation.SuppressLint("MissingPermission")
-    private fun startGps() {
-        if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) return
-        try {
-            val lm = getSystemService(LocationManager::class.java)
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500L, 0f, locationListener)
-        } catch (e: Exception) {
-            Toast.makeText(this, "GPS không khả dụng", Toast.LENGTH_SHORT).show()
-        }
-    }
-
     override fun onDestroy() {
-        try {
-            getSystemService(LocationManager::class.java).removeUpdates(locationListener)
-        } catch (e: Exception) {}
         super.onDestroy()
+        try {
+            getSystemService(LocationManager::class.java).removeUpdates(this)
+        } catch (e: Exception) {}
         cameraExecutor.shutdown()
         detNear?.close()
         detFar?.close()

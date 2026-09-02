@@ -59,7 +59,6 @@ class MainActivity : AppCompatActivity() {
     private var modeVehicle = false
     private var lastBeepViolation = 0L
     private var currentSpeedKmh = -1f
-    private val locListener = GpsListener { speed -> currentSpeedKmh = speed }
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -94,12 +93,8 @@ class MainActivity : AppCompatActivity() {
     private fun granted(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
 
     private fun reset() {
-        estimator.reset()
-        widthHist.clear()
-        lastBox = null
-        lastSeen = 0L
-        b.tvMain.text = "-- m"
-        b.tvDetail.text = ""
+        estimator.reset(); widthHist.clear(); lastBox = null; lastSeen = 0L
+        b.tvMain.text = "-- m"; b.tvDetail.text = ""
         b.overlay.setResult(null, 0, 0, "", false)
         b.tvModeInfo.text = if (modeVehicle) "Chế độ xe chạy" else "Chế độ vật thể"
     }
@@ -136,7 +131,15 @@ class MainActivity : AppCompatActivity() {
     private fun startGps() {
         try {
             val lm = getSystemService(LocationManager::class.java)
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500, 0f, locListener)
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500, 0f, object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    currentSpeedKmh = if (location.hasSpeed()) location.speed * 3.6f else -1f
+                }
+                override fun onProviderEnabled(provider: String) {}
+                override fun onProviderDisabled(provider: String) {}
+                @Suppress("DEPRECATION")
+                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+            })
         } catch (e: Exception) {}
     }
 
@@ -262,17 +265,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        try { getSystemService(LocationManager::class.java).removeUpdates(locListener) } catch (e: Exception) {}
+        try { getSystemService(LocationManager::class.java).removeUpdates(object : LocationListener {
+            override fun onLocationChanged(location: Location) {}
+            override fun onProviderEnabled(provider: String) {}
+            override fun onProviderDisabled(provider: String) {}
+            @Suppress("DEPRECATION")
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+        }) } catch (e: Exception) {}
         cameraExecutor.shutdown(); detNear?.close(); detFar?.close(); tone?.release()
     }
-}
-
-@Suppress("DEPRECATION")
-class GpsListener(val onSpeed: (Float) -> Unit) : LocationListener {
-    override fun onLocationChanged(location: Location) {
-        onSpeed(if (location.hasSpeed()) location.speed * 3.6f else -1f)
-    }
-    override fun onProviderEnabled(provider: String) {}
-    override fun onProviderDisabled(provider: String) {}
-    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
 }

@@ -18,7 +18,6 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.util.Size
 import android.view.WindowManager
-import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
@@ -36,26 +35,20 @@ import com.google.mlkit.vision.objects.ObjectDetection
 import com.google.mlkit.vision.objects.ObjectDetector
 import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import com.hi.khoangcachxe.databinding.ActivityMainBinding
-import java.util.ArrayDeque
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.abs
 import kotlin.math.tan
 
 class MainActivity : AppCompatActivity() {
-
     private lateinit var b: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
-    private var detNear: ObjectDetector? = null
-    private var detFar: ObjectDetector? = null
+    private var detector: ObjectDetector? = null
     private val busy = AtomicBoolean(false)
     private val estimator = DistanceEstimator()
     private var focalPx = 0f
-    private var lastBox: Rect? = null
     private var lastSeen = 0L
     private var tone: ToneGenerator? = null
-    private val widthHist = ArrayDeque<Pair<Long, Float>>()
     private var modeVehicle = false
     private var lastBeepViolation = 0L
     private var currentSpeedKmh = -1f
@@ -75,11 +68,9 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
         tone = try { ToneGenerator(AudioManager.STREAM_MUSIC, 90) } catch (e: Exception) { null }
 
-        val opts = ObjectDetectorOptions.Builder()
+        detector = ObjectDetection.getClient(ObjectDetectorOptions.Builder()
             .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
-            .enableMultipleObjects().enableClassification().build()
-        detNear = ObjectDetection.getClient(opts)
-        detFar = ObjectDetection.getClient(opts)
+            .enableMultipleObjects().enableClassification().build())
 
         b.btnModeVehicle.setOnClickListener { modeVehicle = true; reset() }
         b.btnModeObject.setOnClickListener { modeVehicle = false; reset() }
@@ -93,10 +84,9 @@ class MainActivity : AppCompatActivity() {
     private fun granted(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
 
     private fun reset() {
-        estimator.reset(); widthHist.clear(); lastBox = null; lastSeen = 0L
+        estimator.reset(); lastSeen = 0L
         b.tvMain.text = "-- m"; b.tvDetail.text = ""
-        b.overlay.setResult(null, 0, 0, "", false)
-        b.tvModeInfo.text = if (modeVehicle) "Chế độ xe chạy" else "Chế độ vật thể"
+        b.tvModeInfo.text = if (modeVehicle) "Chế độ: Xe chạy" else "Chế độ: Vật thể"
     }
 
     private fun startCamera() {
@@ -108,22 +98,19 @@ class MainActivity : AppCompatActivity() {
                     .setResolutionStrategy(ResolutionStrategy(Size(1920, 1080),
                         ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)).build()
 
-                val prev = Preview.Builder().setResolutionSelector(
+                val preview = Preview.Builder().setResolutionSelector(
                     ResolutionSelector.Builder().setAspectRatioStrategy(
                         AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY).build())
                     .build().also { it.setSurfaceProvider(b.previewView.surfaceProvider) }
 
-                val ana = ImageAnalysis.Builder().setResolutionSelector(sel)
+                val analysis = ImageAnalysis.Builder().setResolutionSelector(sel)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
-                ana.setAnalyzer(cameraExecutor) { onFrame(it) }
+                analysis.setAnalyzer(cameraExecutor) { onFrame(it) }
 
                 provider.unbindAll()
-                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, prev, ana)
-                b.tvDetail.text = "Quay camera vào vật..."
-            } catch (e: Exception) {
-                b.tvDetail.text = "Lỗi: ${e.message}"
-            }
+                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+            } catch (e: Exception) {}
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -145,110 +132,108 @@ class MainActivity : AppCompatActivity() {
 
     private fun onFrame(proxy: ImageProxy) {
         if (!busy.compareAndSet(false, true)) { proxy.close(); return }
-        val bmp = try {
-            val raw = proxy.toBitmap()
+        try {
+            val bmp = proxy.toBitmap()
             val rot = proxy.imageInfo.rotationDegrees
-            if (rot == 0) raw else {
+            val img = if (rot == 0) bmp else {
                 val m = Matrix().apply { postRotate(rot.toFloat()) }
-                val r = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true)
-                raw.recycle(); r
+                val r = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+                bmp.recycle(); r
             }
-        } catch (e: Exception) { busy.set(false); return } finally { proxy.close() }
-
-        val w = bmp.width; val h = bmp.height
-        if (focalPx <= 0f) focalPx = computeFocalPx(w, h)
-
-        val near = detNear; val far = detFar
-        if (near == null || far == null) { busy.set(false); return }
-
-        val rw = (w * 0.34f).toInt(); val rh = (h * 0.42f).toInt()
-        val rx = (w - rw) / 2; val ry = (h - rh) / 2
-        val roi = Rect(rx, ry, rx + rw, ry + rh)
-
-        near.process(InputImage.fromBitmap(bmp, 0)).addOnSuccessListener { nearObjs ->
-            val crop = try { Bitmap.createBitmap(bmp, roi.left, roi.top, rw, rh) } catch (e: Exception) { null }
-            if (crop == null) { render(pickBest(nearObjs, w, h), w, h); bmp.recycle(); busy.set(false) }
-            else far.process(InputImage.fromBitmap(crop, 0))
-                .addOnSuccessListener { farObjs -> render(bestOf(nearObjs, farObjs, roi, w, h), w, h) }
-                .addOnFailureListener { render(pickBest(nearObjs, w, h), w, h) }
-                .addOnCompleteListener { crop.recycle(); bmp.recycle(); busy.set(false) }
-        }.addOnFailureListener { bmp.recycle(); busy.set(false) }
+            
+            if (focalPx <= 0f) focalPx = computeFocalPx(img.width, img.height)
+            
+            detector?.process(InputImage.fromBitmap(img, 0))
+                ?.addOnSuccessListener { objs ->
+                    val best = pickBest(objs, img.width, img.height)
+                    runOnUiThread { render(best, img.width, img.height) }
+                    img.recycle()
+                }
+                ?.addOnFailureListener { img.recycle() }
+        } finally {
+            proxy.close()
+            busy.set(false)
+        }
     }
 
     private fun pickBest(objs: List<DetectedObject>, w: Int, h: Int): DetectedObject? {
-        var best: DetectedObject? = null; var bestScore = 0f
+        var best: DetectedObject? = null
+        var bestScore = 0f
         for (o in objs) {
-            val r = o.boundingBox; val bw = r.width().toFloat(); val bh = r.height().toFloat()
+            val r = o.boundingBox
+            val bw = r.width().toFloat()
+            val bh = r.height().toFloat()
             if (bw < 8f || bh < 6f || bw > w * 0.92f) continue
             val cx = r.exactCenterX() / w
-            if (cx < 0.15f || cx > 0.85f || r.bottom < h * 0.25f) continue
-            val label = o.labels.firstOrNull()?.text ?: "obj"
-            if (modeVehicle && !isVehicle(label)) continue
-            val score = bw / w * (1f - abs(cx - 0.5f))
-            if (score > bestScore) { bestScore = score; best = o; estimator.vehicleWidthM = ObjectSize.getWidth(label) }
-        }
-        return best
-    }
-
-    private fun bestOf(nearObjs: List<DetectedObject>, farObjs: List<DetectedObject>, roi: Rect, w: Int, h: Int): DetectedObject? {
-        val bestNear = pickBest(nearObjs, w, h)
-        if (bestNear != null && bestNear.boundingBox.width() > w * 0.09f) return bestNear
-        var best: DetectedObject? = null; var bestScore = 0f
-        for (o in farObjs) {
-            val r = o.boundingBox; val bw = r.width().toFloat(); val bh = r.height().toFloat()
-            if (bw < 8f || bh < 6f) continue
-            val mx = r.left + roi.left; val mw = r.right + roi.left - mx
-            if (mw > w * 0.92f) continue
-            val cx = (mx + r.right + roi.left) / 2f / w
             if (cx < 0.15f || cx > 0.85f) continue
             val label = o.labels.firstOrNull()?.text ?: "obj"
             if (modeVehicle && !isVehicle(label)) continue
             val score = bw / w
-            if (score > bestScore) { bestScore = score; best = o; estimator.vehicleWidthM = ObjectSize.getWidth(label) }
+            if (score > bestScore) {
+                bestScore = score
+                best = o
+                estimator.vehicleWidthM = ObjectSize.getWidth(label)
+            }
         }
         return best
     }
 
-    private fun isVehicle(label: String): Boolean = label.lowercase().let { it.contains("car") || it.contains("truck") || it.contains("bus") }
+    private fun isVehicle(label: String): Boolean {
+        val l = label.lowercase()
+        return l.contains("car") || l.contains("truck") || l.contains("bus") || l.contains("vehicle")
+    }
 
     private fun render(obj: DetectedObject?, w: Int, h: Int) {
         val now = SystemClock.elapsedRealtime()
         b.overlay.setImageSize(w, h)
+        
         if (obj == null) {
             if (now - lastSeen > 900) {
-                lastBox = null; estimator.reset(); widthHist.clear()
-                b.tvMain.text = "-- m"; b.tvMain.setTextColor(Color.WHITE)
-                b.tvDetail.text = "Quay camera vào vật..."; b.overlay.setResult(null, w, h, "", false)
+                estimator.reset()
+                b.tvMain.text = "-- m"
+                b.tvMain.setTextColor(Color.WHITE)
+                b.tvDetail.text = ""
+                b.overlay.box = null
+                b.overlay.invalidate()
             }
             return
         }
-        lastSeen = now; val box = obj.boundingBox; lastBox = box
-        val bw = box.width().toFloat(); widthHist.addLast(Pair(now, bw))
-        while (widthHist.isNotEmpty() && now - widthHist.first.first > 1500) widthHist.removeFirst()
-        val res = estimator.update(bw, focalPx, now) ?: return
-        val d = res.distanceM; val label = if (d > 110) "> 110 m" else String.format("%.2f m", d)
-        val objLabel = obj.labels.firstOrNull()?.text ?: "obj"
-        b.tvMain.text = label
-        val det = "$objLabel · ±%.1fm".format(res.uncertaintyM)
-        var alert = false
         
+        lastSeen = now
+        val box = obj.boundingBox
+        val bw = box.width().toFloat()
+        val res = estimator.update(bw, focalPx, now) ?: return
+        val d = res.distanceM
+        val objLabel = obj.labels.firstOrNull()?.text ?: "obj"
+        val label = if (d > 110) "> 110 m" else String.format("%.2f m", d)
+        
+        b.tvMain.text = label
+        b.overlay.box = box
+        b.overlay.invalidate()
+        
+        var alert = false
         if (modeVehicle && isVehicle(objLabel)) {
             val spd = if (currentSpeedKmh > 0) currentSpeedKmh else 80f
             val min = SafeDistance.getMinDistance(spd)
             if (d < min) {
                 alert = true
-                b.tvDetail.text = det + " · CẢNH BÁO: min ${min.toInt()}m @ ${spd.toInt()}km/h"
+                b.tvDetail.text = "$objLabel · CẢNH BÁO: min ${min.toInt()}m @ ${spd.toInt()}km/h"
                 b.tvMain.setTextColor(Color.rgb(255, 60, 60))
-                if (now - lastBeepViolation > 1000) { lastBeepViolation = now; try { tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 200) } catch (e: Exception) {} }
+                val now2 = SystemClock.elapsedRealtime()
+                if (now2 - lastBeepViolation > 1000) {
+                    lastBeepViolation = now2
+                    try { tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 200) } catch (e: Exception) {}
+                }
             } else {
-                b.tvDetail.text = det + " · ok (min ${min.toInt()}m)"; b.tvMain.setTextColor(Color.WHITE)
+                b.tvDetail.text = "$objLabel · ok (min ${min.toInt()}m)"
+                b.tvMain.setTextColor(Color.WHITE)
             }
         } else {
-            b.tvDetail.text = det; b.tvMain.setTextColor(Color.WHITE)
+            b.tvDetail.text = objLabel + " · ±" + String.format("%.1f", res.uncertaintyM) + "m"
+            b.tvMain.setTextColor(Color.WHITE)
         }
         
-        // GỌI setResult() để hiển thị khung bao
-        b.overlay.setResult(box, w, h, label, alert)
+        b.overlay.alert = alert
     }
 
     private fun computeFocalPx(w: Int, h: Int): Float {
@@ -268,13 +253,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        try { getSystemService(LocationManager::class.java).removeUpdates(object : LocationListener {
-            override fun onLocationChanged(location: Location) {}
-            override fun onProviderEnabled(provider: String) {}
-            override fun onProviderDisabled(provider: String) {}
-            @Suppress("DEPRECATION")
-            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
-        }) } catch (e: Exception) {}
-        cameraExecutor.shutdown(); detNear?.close(); detFar?.close(); tone?.release()
+        cameraExecutor.shutdown()
+        detector?.close()
+        tone?.release()
     }
 }

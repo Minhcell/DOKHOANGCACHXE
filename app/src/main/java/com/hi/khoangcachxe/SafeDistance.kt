@@ -5,8 +5,6 @@ object SafeDistance {
         speedKmh < 60 -> 35f
         speedKmh < 80 -> 55f
         speedKmh < 100 -> 70f
-        speedKmh < 120 -> 100f
-        else -> 110f
+        else -> 100f
     }
-    fun isViolation(distanceM: Float, speedKmh: Float): Boolean = distanceM < getMinDistance(speedKmh)
 }

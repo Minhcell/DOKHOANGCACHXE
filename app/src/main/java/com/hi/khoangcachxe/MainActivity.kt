@@ -15,6 +15,7 @@ import android.location.LocationManager
 import android.media.ToneGenerator
 import android.os.Bundle
 import android.os.SystemClock
+import android.annotation.SuppressLint
 import android.util.Size
 import android.view.WindowManager
 import android.widget.Toast
@@ -81,7 +82,7 @@ class MainActivity : AppCompatActivity() {
         }
         override fun onProviderDisabled(provider: String) {}
         override fun onProviderEnabled(provider: String) {}
-        @Deprecated("Deprecated")
+        @Deprecated("Deprecated", replaceWith = ReplaceWith(""), level = DeprecationLevel.HIDDEN)
         override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
     }
 

@@ -6,9 +6,6 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Matrix
-import android.graphics.Rect
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -70,10 +67,6 @@ class MainActivity : AppCompatActivity() {
         detector = ObjectDetection.getClient(ObjectDetectorOptions.Builder()
             .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
             .enableMultipleObjects().enableClassification().build())
-
-        b.btnModeVehicle.visibility = android.view.View.GONE
-        b.btnModeObject.visibility = android.view.View.GONE
-        b.tvModeInfo.text = "Chế độ: Xe phía trước"
 
         val need = mutableListOf<String>()
         if (!granted(Manifest.permission.CAMERA)) need += Manifest.permission.CAMERA
@@ -194,14 +187,13 @@ class MainActivity : AppCompatActivity() {
         val gpsSpeedStr = if (currentSpeedKmh > 0) String.format("GPS: %.0f km/h", currentSpeedKmh) else "GPS: chờ..."
         b.tvInfo.text = gpsSpeedStr
         
-        // Update ruler
-        b.rulerView.currentSpeed = if (currentSpeedKmh > 0) currentSpeedKmh.toInt() else 80
-        
         if (obj == null) {
             b.tvMain.text = "-- m"
             b.tvMain.setTextColor(Color.WHITE)
             b.tvDetail.text = ""
             b.overlay.box = null
+            b.rulerView.distance = 0f
+            b.rulerView.invalidate()
             b.overlay.invalidate()
             return
         }
@@ -225,12 +217,12 @@ class MainActivity : AppCompatActivity() {
         
         val d = res.distanceM
         if (!d.isFinite() || d > 110f) {
-            b.rulerView.distance = 110f
-            b.rulerView.invalidate()
             b.tvMain.text = "> 110 m"
             b.tvMain.setTextColor(Color.GRAY)
             b.tvDetail.text = ""
             b.overlay.alert = false
+            b.rulerView.distance = 110f
+            b.rulerView.invalidate()
             b.overlay.invalidate()
             return
         }
@@ -269,20 +261,21 @@ class MainActivity : AppCompatActivity() {
         }
         
         b.tvDetail.text = detail
-        b.rulerView.distance = d
-        b.rulerView.invalidate()
         b.overlay.alert = alert
+        b.rulerView.distance = d
+        b.rulerView.currentSpeed = if (currentSpeedKmh > 0) currentSpeedKmh.toInt() else 80
+        b.rulerView.invalidate()
         b.overlay.invalidate()
     }
 
     private fun computeFocalPx(w: Int, h: Int): Float {
         try {
-            val cm = getSystemService(CameraManager::class.java)
+            val cm = getSystemService(android.hardware.camera2.CameraManager::class.java)
             for (id in cm.cameraIdList) {
                 val c = cm.getCameraCharacteristics(id)
-                if (c.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) continue
-                val f = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: continue
-                val sz = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) ?: continue
+                if (c.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) != android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK) continue
+                val f = c.get(android.hardware.camera2.CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: continue
+                val sz = c.get(android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) ?: continue
                 val mm = if (w >= h) sz.width else sz.height
                 if (mm > 0f && f > 0f) return f / mm * w
             }
@@ -297,10 +290,3 @@ class MainActivity : AppCompatActivity() {
         tone?.release()
     }
 }
-// Thêm vào MainActivity.kt - binding reference cho RulerView
-// Trong onCreate(), sau khi detector khởi tạo:
-//
-// Thay vì update b.tvDetail, gọi:
-// b.rulerView.distance = d
-// b.rulerView.currentSpeed = currentSpeedKmh.toInt()
-// b.rulerView.invalidate()

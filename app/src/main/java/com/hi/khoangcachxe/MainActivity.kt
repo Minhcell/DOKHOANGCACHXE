@@ -35,7 +35,6 @@ import com.hi.khoangcachxe.databinding.ActivityMainBinding
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.tan
 
 class MainActivity : AppCompatActivity() {
     private lateinit var b: ActivityMainBinding
@@ -107,9 +106,7 @@ class MainActivity : AppCompatActivity() {
             val lm = getSystemService(LocationManager::class.java)
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500, 0f, object : LocationListener {
                 override fun onLocationChanged(location: Location) {
-                    if (location.hasSpeed()) {
-                        currentSpeedKmh = location.speed * 3.6f
-                    }
+                    if (location.hasSpeed()) currentSpeedKmh = location.speed * 3.6f
                 }
                 override fun onProviderEnabled(provider: String) {}
                 override fun onProviderDisabled(provider: String) {}
@@ -127,8 +124,7 @@ class MainActivity : AppCompatActivity() {
             val img = if (rot == 0) bmp else {
                 val m = Matrix().apply { postRotate(rot.toFloat()) }
                 val r = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
-                bmp.recycle()
-                r
+                bmp.recycle(); r
             }
             
             if (focalPx <= 0f) focalPx = computeFocalPx(img.width, img.height)
@@ -159,6 +155,7 @@ class MainActivity : AppCompatActivity() {
             val cx = r.exactCenterX() / w
             val cy = r.exactCenterY() / h
             
+            // Chỉ bám xe ở giữa khung (0.35-0.65) và phần dưới (0.4-1.0)
             if (cx < 0.35f || cx > 0.65f) continue
             if (cy < 0.4f || cy > 1.0f) continue
             
@@ -184,6 +181,7 @@ class MainActivity : AppCompatActivity() {
         val now = SystemClock.elapsedRealtime()
         b.overlay.setImageSize(w, h)
         
+        // Hiển thị GPS tốc độ
         val gpsSpeedStr = if (currentSpeedKmh > 0) String.format("GPS: %.0f km/h", currentSpeedKmh) else "GPS: chờ..."
         b.tvInfo.text = gpsSpeedStr
         
@@ -192,8 +190,9 @@ class MainActivity : AppCompatActivity() {
             b.tvMain.setTextColor(Color.WHITE)
             b.tvDetail.text = ""
             b.overlay.box = null
-            b.rulerView.distance = 0f
-            b.rulerView.invalidate()
+            b.overlay.distance = 0f
+            b.overlay.currentSpeed = if (currentSpeedKmh > 0) currentSpeedKmh.toInt() else 80
+            b.overlay.alert = false
             b.overlay.invalidate()
             return
         }
@@ -202,6 +201,7 @@ class MainActivity : AppCompatActivity() {
         val box = obj.boundingBox
         val bw = box.width().toFloat()
         
+        // Hiển thị khung bao
         b.overlay.box = box
         
         if (focalPx <= 0f) {
@@ -209,43 +209,52 @@ class MainActivity : AppCompatActivity() {
             return
         }
         
-        val res = estimator.update(bw, focalPx, now)
-        if (res == null) {
-            b.overlay.invalidate()
-            return
-        }
+        // ===== TÍNH KHOẢNG CÁCH 2 CÁCH =====
         
-        val d = res.distanceM
-        if (!d.isFinite() || d > 110f) {
+        // Cách 1: Từ camera (pixel -> meter)
+        val res = estimator.update(bw, focalPx, now)
+        val distCamera = if (res != null && res.distanceM.isFinite()) res.distanceM else 0f
+        
+        // Cách 2: Từ ruler (vị trí Y của xe)
+        val rulerTop = 0.85f  // 0m (xe phía trước)
+        val rulerBottom = 0.15f  // 110m
+        val carBottomY = box.bottom.toFloat() / h
+        val distRuler = if (carBottomY >= rulerBottom && carBottomY <= rulerTop) {
+            (rulerTop - carBottomY) / (rulerTop - rulerBottom) * 110f
+        } else if (carBottomY > rulerTop) 0f else 110f
+        
+        // Kết hợp: 50% camera + 50% ruler
+        val distance = (distCamera * 0.5f + distRuler * 0.5f).coerceIn(0f, 110f)
+        
+        if (!distance.isFinite() || distance > 110f) {
             b.tvMain.text = "> 110 m"
             b.tvMain.setTextColor(Color.GRAY)
             b.tvDetail.text = ""
+            b.overlay.distance = 110f
             b.overlay.alert = false
-            b.rulerView.distance = 110f
-            b.rulerView.invalidate()
             b.overlay.invalidate()
             return
         }
         
         val objLabel = obj.labels.firstOrNull()?.text ?: "obj"
-        val label = String.format("%.1f m", d)
+        val label = String.format("%.1f m", distance)
         
         b.tvMain.text = label
         b.tvMain.setTextColor(Color.WHITE)
         
-        var detail = ""
+        var detail = "$objLabel · Camera: ${distCamera.toInt()}m, Ruler: ${distRuler.toInt()}m"
         var alert = false
         
         if (currentSpeedKmh > 0) {
             val spd = currentSpeedKmh
-            val min = SafeDistance.getMinDistance(spd)
+            val min = getMinDist(spd)
             val spdInt = spd.toInt()
             val minInt = min.toInt()
             
-            if (d < min) {
+            if (distance < min) {
                 b.tvMain.setTextColor(Color.rgb(255, 60, 60))
                 alert = true
-                detail = "⚠️ VI PHẠM: ${d.toInt()}m < ${minInt}m @ ${spdInt}km/h"
+                detail = "⚠️ VI PHẠM: ${distance.toInt()}m < ${minInt}m @ ${spdInt}km/h"
                 
                 val now2 = SystemClock.elapsedRealtime()
                 if (now2 - lastBeepViolation > 1000) {
@@ -253,18 +262,16 @@ class MainActivity : AppCompatActivity() {
                     try { tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 200) } catch (e: Exception) {}
                 }
             } else {
-                detail = "✓ AN TOÀN: ${d.toInt()}m ≥ ${minInt}m @ ${spdInt}km/h"
+                detail = "✓ AN TOÀN: ${distance.toInt()}m ≥ ${minInt}m @ ${spdInt}km/h"
             }
         } else {
-            b.tvMain.setTextColor(Color.YELLOW)
-            detail = "⏳ Chờ GPS: ${d.toInt()}m"
+            detail = "$objLabel · ${distance.toInt()}m"
         }
         
         b.tvDetail.text = detail
+        b.overlay.distance = distance
+        b.overlay.currentSpeed = if (currentSpeedKmh > 0) currentSpeedKmh.toInt() else 80
         b.overlay.alert = alert
-        b.rulerView.distance = d
-        b.rulerView.currentSpeed = if (currentSpeedKmh > 0) currentSpeedKmh.toInt() else 80
-        b.rulerView.invalidate()
         b.overlay.invalidate()
     }
 
@@ -280,7 +287,14 @@ class MainActivity : AppCompatActivity() {
                 if (mm > 0f && f > 0f) return f / mm * w
             }
         } catch (e: Exception) {}
-        return (w / 2f) / tan(Math.toRadians(30.0)).toFloat()
+        return (w / 2f) / kotlin.math.tan(Math.toRadians(30.0)).toFloat()
+    }
+
+    private fun getMinDist(speed: Float): Float = when {
+        speed < 60 -> 35f
+        speed < 80 -> 55f
+        speed < 100 -> 70f
+        else -> 100f
     }
 
     override fun onDestroy() {

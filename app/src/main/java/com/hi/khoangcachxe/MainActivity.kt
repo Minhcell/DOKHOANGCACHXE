@@ -38,7 +38,6 @@ import com.hi.khoangcachxe.databinding.ActivityMainBinding
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.abs
 import kotlin.math.tan
 
 class MainActivity : AppCompatActivity() {
@@ -50,10 +49,8 @@ class MainActivity : AppCompatActivity() {
     private var focalPx = 0f
     private var lastSeen = 0L
     private var tone: ToneGenerator? = null
-    private var modeVehicle = false
     private var lastBeepViolation = 0L
     private var currentSpeedKmh = -1f
-    private var lastFrontBox: Rect? = null
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -74,8 +71,9 @@ class MainActivity : AppCompatActivity() {
             .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
             .enableMultipleObjects().enableClassification().build())
 
-        b.btnModeVehicle.setOnClickListener { modeVehicle = true; reset() }
-        b.btnModeObject.setOnClickListener { modeVehicle = false; reset() }
+        b.btnModeVehicle.visibility = android.view.View.GONE
+        b.btnModeObject.visibility = android.view.View.GONE
+        b.tvModeInfo.text = "Chế độ: Xe phía trước"
 
         val need = mutableListOf<String>()
         if (!granted(Manifest.permission.CAMERA)) need += Manifest.permission.CAMERA
@@ -84,12 +82,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun granted(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
-
-    private fun reset() {
-        estimator.reset(); lastSeen = 0L; lastFrontBox = null
-        b.tvMain.text = "-- m"; b.tvDetail.text = ""
-        b.tvModeInfo.text = if (modeVehicle) "Chế độ: Xe phía trước" else "Chế độ: Vật thể"
-    }
 
     private fun startCamera() {
         ProcessCameraProvider.getInstance(this).addListener({
@@ -142,15 +134,15 @@ class MainActivity : AppCompatActivity() {
             val img = if (rot == 0) bmp else {
                 val m = Matrix().apply { postRotate(rot.toFloat()) }
                 val r = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
-                bmp.recycle(); r
+                bmp.recycle()
+                r
             }
             
             if (focalPx <= 0f) focalPx = computeFocalPx(img.width, img.height)
             
             detector?.process(InputImage.fromBitmap(img, 0))
                 ?.addOnSuccessListener { objs ->
-                    val best = if (modeVehicle) pickFrontVehicle(objs, img.width, img.height) 
-                               else pickBest(objs, img.width, img.height)
+                    val best = pickFrontVehicle(objs, img.width, img.height)
                     runOnUiThread { render(best, img.width, img.height) }
                     img.recycle()
                 }
@@ -161,7 +153,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Chỉ bám xe phía trước (làn xe mình, vị trí giữa-dưới)
     private fun pickFrontVehicle(objs: List<DetectedObject>, w: Int, h: Int): DetectedObject? {
         var best: DetectedObject? = null
         var bestScore = 0f
@@ -175,40 +166,13 @@ class MainActivity : AppCompatActivity() {
             val cx = r.exactCenterX() / w
             val cy = r.exactCenterY() / h
             
-            // Chỉ bám xe ở giữa khung hình (0.35 - 0.65) - làn xe mình
             if (cx < 0.35f || cx > 0.65f) continue
-            
-            // Xe phía trước thường ở phần dưới khung hình (0.4 - 1.0)
             if (cy < 0.4f || cy > 1.0f) continue
             
             val label = o.labels.firstOrNull()?.text ?: "obj"
-            
-            // Chỉ lấy xe (car, truck, bus)
             if (!isVehicle(label)) continue
             
-            // Ưu tiên xe ở dưới (gần hơn)
             val score = bw / w * cy
-            if (score > bestScore) {
-                bestScore = score
-                best = o
-                estimator.vehicleWidthM = ObjectSize.getWidth(label)
-            }
-        }
-        return best
-    }
-
-    private fun pickBest(objs: List<DetectedObject>, w: Int, h: Int): DetectedObject? {
-        var best: DetectedObject? = null
-        var bestScore = 0f
-        for (o in objs) {
-            val r = o.boundingBox
-            val bw = r.width().toFloat()
-            val bh = r.height().toFloat()
-            if (bw < 8f || bh < 6f || bw > w * 0.92f) continue
-            val cx = r.exactCenterX() / w
-            if (cx < 0.15f || cx > 0.85f) continue
-            val label = o.labels.firstOrNull()?.text ?: "obj"
-            val score = bw / w
             if (score > bestScore) {
                 bestScore = score
                 best = o
@@ -227,47 +191,45 @@ class MainActivity : AppCompatActivity() {
         val now = SystemClock.elapsedRealtime()
         b.overlay.setImageSize(w, h)
         
-        // Hiển thị tốc độ GPS trên màn hình
         val gpsSpeedStr = if (currentSpeedKmh > 0) String.format("GPS: %.0f km/h", currentSpeedKmh) else "GPS: chờ..."
         b.tvInfo.text = gpsSpeedStr
         
+        // Update ruler
+        b.rulerView.currentSpeed = if (currentSpeedKmh > 0) currentSpeedKmh.toInt() else 80
+        
         if (obj == null) {
-            if (now - lastSeen > 900) {
-                estimator.reset()
-                lastFrontBox = null
-                b.tvMain.text = "-- m"
-                b.tvMain.setTextColor(Color.WHITE)
-                b.tvDetail.text = ""
-                b.overlay.box = null
-                b.overlay.invalidate()
-            }
+            b.tvMain.text = "-- m"
+            b.tvMain.setTextColor(Color.WHITE)
+            b.tvDetail.text = ""
+            b.overlay.box = null
+            b.overlay.invalidate()
             return
         }
         
         lastSeen = now
         val box = obj.boundingBox
-        lastFrontBox = box
         val bw = box.width().toFloat()
         
+        b.overlay.box = box
+        
         if (focalPx <= 0f) {
-            b.overlay.box = box
             b.overlay.invalidate()
             return
         }
         
         val res = estimator.update(bw, focalPx, now)
         if (res == null) {
-            b.overlay.box = box
             b.overlay.invalidate()
             return
         }
         
         val d = res.distanceM
         if (!d.isFinite() || d > 110f) {
+            b.rulerView.distance = 110f
+            b.rulerView.invalidate()
             b.tvMain.text = "> 110 m"
             b.tvMain.setTextColor(Color.GRAY)
             b.tvDetail.text = ""
-            b.overlay.box = box
             b.overlay.alert = false
             b.overlay.invalidate()
             return
@@ -277,11 +239,12 @@ class MainActivity : AppCompatActivity() {
         val label = String.format("%.1f m", d)
         
         b.tvMain.text = label
-        b.overlay.box = box
+        b.tvMain.setTextColor(Color.WHITE)
         
-        var detail = "$objLabel · ±" + String.format("%.2f", res.uncertaintyM) + "m"
+        var detail = ""
+        var alert = false
         
-        if (modeVehicle && currentSpeedKmh > 0) {
+        if (currentSpeedKmh > 0) {
             val spd = currentSpeedKmh
             val min = SafeDistance.getMinDistance(spd)
             val spdInt = spd.toInt()
@@ -289,7 +252,7 @@ class MainActivity : AppCompatActivity() {
             
             if (d < min) {
                 b.tvMain.setTextColor(Color.rgb(255, 60, 60))
-                b.overlay.alert = true
+                alert = true
                 detail = "⚠️ VI PHẠM: ${d.toInt()}m < ${minInt}m @ ${spdInt}km/h"
                 
                 val now2 = SystemClock.elapsedRealtime()
@@ -298,20 +261,17 @@ class MainActivity : AppCompatActivity() {
                     try { tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 200) } catch (e: Exception) {}
                 }
             } else {
-                b.tvMain.setTextColor(Color.WHITE)
-                b.overlay.alert = false
                 detail = "✓ AN TOÀN: ${d.toInt()}m ≥ ${minInt}m @ ${spdInt}km/h"
             }
-        } else if (modeVehicle) {
-            b.tvMain.setTextColor(Color.YELLOW)
-            b.overlay.alert = false
-            detail = "⏳ Chờ tốc độ GPS... · ${d.toInt()}m"
         } else {
-            b.tvMain.setTextColor(Color.WHITE)
-            b.overlay.alert = false
+            b.tvMain.setTextColor(Color.YELLOW)
+            detail = "⏳ Chờ GPS: ${d.toInt()}m"
         }
         
         b.tvDetail.text = detail
+        b.rulerView.distance = d
+        b.rulerView.invalidate()
+        b.overlay.alert = alert
         b.overlay.invalidate()
     }
 
@@ -337,3 +297,10 @@ class MainActivity : AppCompatActivity() {
         tone?.release()
     }
 }
+// Thêm vào MainActivity.kt - binding reference cho RulerView
+// Trong onCreate(), sau khi detector khởi tạo:
+//
+// Thay vì update b.tvDetail, gọi:
+// b.rulerView.distance = d
+// b.rulerView.currentSpeed = currentSpeedKmh.toInt()
+// b.rulerView.invalidate()

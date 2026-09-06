@@ -9,11 +9,6 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <com.hi.khoangcachxe.RulerView
-        android:id="@+id/rulerView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
     <com.hi.khoangcachxe.OverlayView
         android:id="@+id/overlay"
         android:layout_width="match_parent"

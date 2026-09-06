@@ -1,46 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000">
+    android:background="#000">
 
     <androidx.camera.view.PreviewView
         android:id="@+id/previewView"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        app:scaleType="fitCenter" />
+        android:layout_height="match_parent" />
+
+    <com.hi.khoangcachxe.RulerView
+        android:id="@+id/rulerView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
     <com.hi.khoangcachxe.OverlayView
         android:id="@+id/overlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
-
-    <LinearLayout
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top|start"
-        android:orientation="vertical"
-        android:background="#99000000"
-        android:padding="10dp">
-
-        <TextView
-            android:id="@+id/tvMain"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="-- m"
-            android:textColor="#FFFFFF"
-            android:textSize="44sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/tvDetail"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Đang khởi động camera..."
-            android:textColor="#DDDDDD"
-            android:textSize="13sp" />
-    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/panelMode"
@@ -51,278 +28,50 @@
         android:background="#99000000"
         android:padding="8dp">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="40dp"
-            android:orientation="horizontal">
-            <Button
-                android:id="@+id/btnModeVehicle"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:textSize="10sp"
-                android:padding="0dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="Xe chạy" />
-            <Button
-                android:id="@+id/btnModeObject"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:textSize="10sp"
-                android:padding="0dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="Vật thể" />
-        </LinearLayout>
-
         <TextView
             android:id="@+id/tvModeInfo"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:textColor="#FFD400"
-            android:textSize="9sp"
-            android:text="" />
+            android:textSize="14sp"
+            android:text="Chế độ: Xe phía trước" />
 
-        <Button
-            android:id="@+id/btnMode"
-            android:layout_width="match_parent"
-            android:layout_height="40dp"
-            android:textSize="11sp"
-            android:padding="0dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:visibility="gone"
-            android:text="Chế độ: Xe đang chạy" />
-
-        <LinearLayout
-            android:id="@+id/panelObject"
+        <TextView
+            android:id="@+id/tvInfo"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:visibility="gone">
-
-            <Button
-                android:id="@+id/btnMethod"
-                android:layout_width="match_parent"
-                android:layout_height="40dp"
-                android:textSize="10sp"
-                android:padding="0dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="Cách đo: GÓC NGHIÊNG" />
-
-            <LinearLayout
-                android:id="@+id/rowHeight"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11sp"
-                    android:text="Chiều cao camera so với sàn (cm):" />
-
-                <EditText
-                    android:id="@+id/etHeight"
-                    android:layout_width="match_parent"
-                    android:layout_height="42dp"
-                    android:inputType="numberDecimal"
-                    android:imeOptions="actionDone|flagNoExtractUi"
-                    android:textColor="#FFFFFF"
-                    android:textSize="14sp"
-                    android:text="140"
-                    android:autofillHints=""
-                    android:hint="cm" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/rowSize"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:visibility="gone">
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11sp"
-                    android:text="Bề ngang THẬT của vật (cm):" />
-
-                <EditText
-                    android:id="@+id/etObjW"
-                    android:layout_width="match_parent"
-                    android:layout_height="42dp"
-                    android:inputType="numberDecimal"
-                    android:imeOptions="actionDone|flagNoExtractUi"
-                    android:textColor="#FFFFFF"
-                    android:textSize="14sp"
-                    android:text="122"
-                    android:autofillHints=""
-                    android:hint="cm" />
-
-                <Spinner
-                    android:id="@+id/spPreset"
-                    android:layout_width="match_parent"
-                    android:layout_height="40dp"
-                    android:entries="@array/object_presets" />
-            </LinearLayout>
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp"
-                android:text="Từ chỗ đứng tới camera (cm):" />
-
-            <Button
-                android:id="@+id/btnCalibrate"
-                android:layout_width="match_parent"
-                android:layout_height="40dp"
-                android:textSize="10sp"
-                android:padding="0dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="⚙ Hiệu chỉnh camera (tìm tiêu cự)" />
-
-            <TextView
-                android:id="@+id/tvCalibStatus"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:textColor="#FFD400"
-                android:textSize="10sp"
-                android:text="Chưa hiệu chỉnh camera. Bấm nút để hiệu chỉnh." />
-
-            <EditText
-                android:id="@+id/etOffset"
-                android:layout_width="match_parent"
-                android:layout_height="42dp"
-                android:inputType="numberDecimal"
-                android:imeOptions="actionDone|flagNoExtractUi"
-                android:textColor="#FFFFFF"
-                android:textSize="14sp"
-                android:text="30"
-                android:autofillHints=""
-                android:hint="cm" />
-
-            <TextView
-                android:id="@+id/tvObjHint"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:textColor="#FFD400"
-                android:textSize="10sp"
-                android:text="Kéo vạch vàng tới chân vật (chỗ chạm sàn)" />
-        </LinearLayout>
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:text=""
+            android:layout_marginTop="8dp" />
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/tvInfo"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|start"
-        android:background="#99000000"
-        android:padding="6dp"
-        android:textColor="#AAAAAA"
-        android:textSize="11sp"
-        android:text="" />
-
     <LinearLayout
-        android:layout_width="250dp"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end"
+        android:layout_gravity="bottom|center"
         android:orientation="vertical"
-        android:background="#99000000"
-        android:padding="8dp">
+        android:background="rgba(0,0,0,0.9)"
+        android:padding="20dp">
 
         <TextView
-            android:id="@+id/tvWidth"
+            android:id="@+id/tvMain"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:text="-- m"
+            android:textSize="48sp"
             android:textColor="#FFFFFF"
-            android:textSize="12sp"
-            android:text="Bề ngang xe trước: 1.80 m" />
-
-        <SeekBar
-            android:id="@+id/sbWidth"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:max="140"
-            android:progress="40" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btnCar"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="38dp"
-                android:textSize="10sp"
-                android:padding="0dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="Xe con" />
-
-            <Button
-                android:id="@+id/btnSuv"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="38dp"
-                android:textSize="10sp"
-                android:padding="0dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="SUV" />
-
-            <Button
-                android:id="@+id/btnTruck"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="38dp"
-                android:textSize="10sp"
-                android:padding="0dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="Tải" />
-        </LinearLayout>
+            android:textStyle="bold"
+            android:textAlignment="center" />
 
         <TextView
-            android:id="@+id/tvCalib"
+            android:id="@+id/tvDetail"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="16sp"
             android:textColor="#FFFFFF"
-            android:textSize="12sp"
-            android:text="Hiệu chỉnh: 1.00" />
-
-        <SeekBar
-            android:id="@+id/sbCalib"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:max="60"
-            android:progress="30" />
-
-        <Button
-            android:id="@+id/btnCalib"
-            android:layout_width="match_parent"
-            android:layout_height="40dp"
-            android:textSize="10sp"
-            android:padding="0dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:text="Hiệu chỉnh tự động bằng GPS" />
-
-        <TextView
-            android:id="@+id/tvCalibInfo"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="#FFD400"
-            android:textSize="11sp"
-            android:text="" />
+            android:textAlignment="center"
+            android:layout_marginTop="10dp" />
     </LinearLayout>
 </FrameLayout>
